@@ -180,3 +180,53 @@ pub fn reduce_iota(e: &Expr) -> Expr {
         }
     }
 }
+
+/// Guarded symbolic normalization (δ + ι, the proof workhorse). Unfolds a call
+/// only when doing so makes *progress* — its guard `match` fires on a
+/// constructor — and otherwise keeps the call in `f(args)` form, which is what a
+/// proof needs in order to rewrite it with a lemma or induction hypothesis.
+///
+/// This sits between `unfold_one`/`reduce_iota` (too blunt: they expand every
+/// occurrence, turning a stuck call into a residual `match`) and `normalize`
+/// (which also expands stuck calls). On an *admitted* module (structural
+/// recursion) the firing chain is bounded by the constructor depth of the
+/// arguments, so `simp` always terminates.
+pub fn simp(module: &Module, e: &Expr) -> Expr {
+    match e {
+        Expr::Var { .. } => e.clone(),
+        Expr::Ctor { name, args } => Expr::Ctor {
+            name: name.clone(),
+            args: args.iter().map(|a| simp(module, a)).collect(),
+        },
+        Expr::Match { scrutinee, arms } => {
+            let scrut = simp(module, scrutinee);
+            if let Expr::Ctor { name: cname, args } = &scrut
+                && let Some(arm) = arms.iter().find(|a| &a.ctor == cname)
+                && arm.binds.len() == args.len()
+            {
+                let map: HashMap<String, Expr> = arm.binds.iter().cloned().zip(args.iter().cloned()).collect();
+                return simp(module, &subst(&arm.body, &map));
+            }
+            // Stuck scrutinee: keep the residual match with its arms untouched.
+            // Reducing under the arm binders would δ-unfold recursive calls in
+            // the arm bodies forever (each rev/go unfolds to another such match).
+            Expr::Match { scrutinee: Box::new(scrut), arms: arms.clone() }
+        }
+        Expr::Call { name, args } => {
+            let args: Vec<Expr> = args.iter().map(|a| simp(module, a)).collect();
+            if let Some(f) = module.fn_def(name)
+                && f.params.len() == args.len()
+            {
+                let map: HashMap<String, Expr> =
+                    f.params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
+                let reduced = simp(module, &subst(&f.body, &map));
+                // A residual `match` means the unfold got stuck: keep the call.
+                if matches!(reduced, Expr::Match { .. }) {
+                    return Expr::Call { name: name.clone(), args };
+                }
+                return reduced;
+            }
+            Expr::Call { name: name.clone(), args }
+        }
+    }
+}

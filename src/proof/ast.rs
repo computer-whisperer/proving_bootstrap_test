@@ -54,6 +54,9 @@ pub enum Step {
     Unfold { func: String, side: Side },
     /// ι: fire all constructor-headed matches.
     Reduce { side: Side },
+    /// Guarded δ+ι: reduce, unfolding calls only where they make progress and
+    /// keeping stuck calls in `f(args)` form. The usual workhorse.
+    Simp { side: Side },
     /// Replace equals by equals using a hypothesis or lemma.
     Rewrite { using: EqRef, dir: Dir, side: Side },
 }

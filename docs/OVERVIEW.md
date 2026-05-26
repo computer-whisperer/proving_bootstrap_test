@@ -141,17 +141,22 @@ needs only:
 - **equality** between object-language terms (`=`), and
 - **universally-quantified equations** (the goal's quantified variables),
 
-proven by a small fixed kit of inference steps:
+proven by a small fixed kit of inference steps (as realized in `proof/`):
 
-- `eval` / normalize a (sub)term via the shared reducer — closes concrete goals.
-- `unfold` a definition (replace a call with its body).
-- `rewrite` by a known equation (including the induction hypothesis).
-- `case` split on the constructors of an inductive value.
+- `simp` — guarded δ+ι reduction via the shared engine: unfold a call only where
+  its guard `match` fires on a constructor, keeping stuck calls as `f(args)`.
+  The workhorse.
+- `unfold` / `reduce` — one δ-layer / ι-only, for the rare cases `simp` is too
+  coarse or too eager.
+- `rewrite` by a known equation (an induction hypothesis or a proven lemma),
+  via first-order matching + capture-avoiding replacement.
 - `induct` on a variable: the kernel generates the base/step subgoals from the
-  type's constructors and makes the induction hypothesis available as a rewrite.
+  type's constructors and supplies the induction hypothesis as a rewritable
+  equation.
 
-That kit is enough to prove `forall n, add(n, Z) = n`, `forall xs, append(xs,
-[]) = xs`, and the north-star equivalence below.
+(`case`, a split without a hypothesis, was in the original sketch but dropped as
+unneeded and derivable.) This kit proves `forall n, add(n, Z) = n`, `forall xs,
+append(xs, []) = xs`, and the north-star equivalence below.
 
 ## Design Decisions (pilot)
 

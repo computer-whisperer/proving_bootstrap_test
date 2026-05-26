@@ -40,6 +40,10 @@ pub fn reduce(side: Side) -> Step {
     Step::Reduce { side }
 }
 
+pub fn simp(side: Side) -> Step {
+    Step::Simp { side }
+}
+
 pub fn rewrite(using: EqRef, dir: Dir, side: Side) -> Step {
     Step::Rewrite { using, dir, side }
 }

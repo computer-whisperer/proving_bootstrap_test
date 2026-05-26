@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::obj_lang::ast::*;
-use crate::obj_lang::reduce::{reduce_iota, unfold_one};
+use crate::obj_lang::reduce::{reduce_iota, simp, unfold_one};
 use crate::obj_lang::subst::{free_vars, fresh_name, subst};
 
 use super::ast::*;
@@ -115,6 +115,9 @@ fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) -> R
         }
         Step::Reduce { side } => {
             apply_side(&mut next, *side, |e| Ok(reduce_iota(e)))?;
+        }
+        Step::Simp { side } => {
+            apply_side(&mut next, *side, |e| Ok(simp(module, e)))?;
         }
         Step::Rewrite { using, dir, side } => {
             let eq = resolve_eq(theory, seq, using)?;

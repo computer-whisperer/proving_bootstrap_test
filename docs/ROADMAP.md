@@ -81,9 +81,28 @@ terminating, which keeps the kernel's termination story obvious. `case` (split
 without an IH) was dropped from the kit — not needed for the demos and derivable;
 re-add if a proof wants it.
 
-### M2 — North star
-- [ ] Prove `forall xs, fast(xs) = rev(xs)`, including the generalized lemma.
-- [ ] This is the "done enough to judge the idea" point.
+### M2 — North star  ✅ done (2026-05-26)
+- [x] Prove `forall xs, fast(xs) = rev(xs)` end-to-end through the kernel, as a
+      4-theorem chain checked in dependency order:
+      `append_nil`, `append_assoc`, `go_spec` (the generalized lemma), `fast_rev`.
+      `tests/m2_reverse_equivalence.rs`
+- [x] The generalization wall is real and was hit: `fast = rev` does **not** go
+      through by induction on `xs` directly; you must first prove the stronger
+      `forall xs acc, go(xs, acc) = append(rev(xs), acc)` (IH instantiated at
+      `acc := Cons(h, acc)`), using `append_assoc` to reassociate. Exactly the
+      lesson the pilot existed to teach.
+- [x] Negative test: citing the lemmas against an empty `Theory` is rejected
+      (`NoLemma`). Whole chain round-trips through JSON and re-checks.
+
+**What M2 forced — the `simp` primitive.** The reverse proof needs a recursive
+call like `append(b, c)` (with `b` a free variable) to *stay* in call form so it
+can be rewritten, while `append(Cons(h,t), y)` must compute. `unfold` (all
+occurrences) and `reduce_iota` are too blunt for this. So M2 added `simp`:
+guarded δ+ι that unfolds a call only when its guard `match` fires on a
+constructor, keeping genuinely stuck calls as `f(args)`. It is now the proof
+workhorse; `unfold`/`reduce` remain for fine control. A termination bug surfaced
+and was fixed: `simp` must **not** reduce under a stuck `match`'s arms (doing so
+δ-unfolds recursive calls in the arm bodies forever).
 
 ### M3 — Stretch / decide-after-M2 (likely out of pilot)
 - [ ] Property-based counterexample search over executable tests (free, since
@@ -130,5 +149,11 @@ only if hand-building becomes the bottleneck.
   checks, reduction engine. 6 tests pass, clippy clean.
 - 2026-05-26: **M1 complete** — proof kernel (`unfold`/`reduce`/`rewrite`/
   `induct`), `Theory` lemma accumulation, two induction proofs + 3 negative
-  tests. 13 tests total, clippy clean. Next: M2 (the north-star reverse
-  equivalence), which exercises lemma citation + hypothesis generalization.
+  tests.
+- 2026-05-26: **M2 complete — north star reached.** `forall xs, fast(xs) =
+  rev(xs)` proven end-to-end (4-theorem chain with the generalized `go_spec`
+  lemma). Added the guarded `simp` reduction primitive. 18 tests total, clippy
+  clean. The pilot has demonstrated its thesis: a naive spec, an optimized
+  implementation, and a machine-checked proof they agree — algorithmic
+  refinement in miniature. M3 (counterexample search / pluggable proof search)
+  is optional and decide-after.
