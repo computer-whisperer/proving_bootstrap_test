@@ -131,11 +131,34 @@ Foundation layer ✅ done (2026-05-26): `tests/m3_memory.rs`
 - [x] Concrete in-place reverse **executes** on the model (`[1,2,3] → [3,2,1]`).
 - [x] McCarthy `read_write` framing lemma (one-step `simp`), `nat_eq_refl`,
       `read_after_write_same`, and a `case_on` exercise (`and_idem`).
+- [x] Induction *over memory structure* (`map_id_preserves_read`).
+- [x] Address-disequality arithmetic (`nat_neq_succ`).
 
-In progress:
-- [ ] General `forall m n, arr(rev_loop(m, …), n) = rev(arr(m, n))` by induction
-      with the two-pointer loop invariant. This is the hard part; outcome (works
-      / needs more automation) is itself the finding.
+**M3 finding (2026-05-26): the general in-place reverse needs conditional
+equations.** The pieces that don't need address arithmetic all prove cleanly
+(above). The general `forall m n, arr(rev_loop(m, …), n) = rev(arr(m, n))` does
+**not** go through, and the reason is precise and architectural, not a matter of
+effort:
+
+- The loop (`rev_loop`, recurses on fuel), the array extraction (`arr_from`,
+  recurses on count), and the memory (recurses on structure) all recurse on
+  *different* things, so correctness needs a positional/range invariant.
+- That invariant is inherently **conditional**: a framing lemma like
+  `lt(a, b) = True ⊢ read(store/loop…, a) = read(m, a)` (reads below the touched
+  region are unchanged). Our `ForallEq` claims are *unconditional* equations.
+- Therefore `induct` cannot carry the precondition into the induction
+  hypothesis. `case_on` discharges disequalities that arise *within* a single
+  goal, but cannot supply a hypothesis to an IH generated from a premise-less
+  goal. This is the wall.
+
+**Recommended next foundation piece:** conditional-premise equations —
+`ForallEq` gains `premises: Vec<Equation>`; premises enter the sequent as usable
+hyps; `induct` substitutes them into the IH; `rewrite` with a conditional lemma
+discharges its premises (against current hyps or as subgoals). This is a natural
+extension of the hypothesis machinery the kernel already has internally (the IH
+*is* an assumed equation). With that plus a small arithmetic library
+(`lt`-monotonicity, `lt ⟹ ≠`), the two-pointer reverse becomes tractable. It is
+a real kernel change, so it is a decision to make deliberately, not ram in.
 
 ### Later / decide-after
 - [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library).
@@ -189,5 +212,11 @@ only if hand-building becomes the bottleneck.
   lemma). Added the guarded `simp` reduction primitive. 18 tests total, clippy
   clean. The pilot has demonstrated its thesis: a naive spec, an optimized
   implementation, and a machine-checked proof they agree — algorithmic
-  refinement in miniature. M3 (counterexample search / pluggable proof search)
-  is optional and decide-after.
+  refinement in miniature.
+- 2026-05-26: **M3 foundation done; general in-place reverse blocked on a
+  precise wall.** Added QoL (`Display`/`run_steps`, `case_on`, `rewrite_all`)
+  and an address-indexed memory. Proven: in-place reverse *executes*, McCarthy
+  framing, induction-over-memory, address-disequality arithmetic (24 tests,
+  clippy clean). Established by attempting it that the *general* in-place reverse
+  needs **conditional-premise equations** — a real but well-scoped kernel
+  extension. That is the decision point now.

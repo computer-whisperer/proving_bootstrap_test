@@ -1,9 +1,21 @@
 //! M3 — reasoning about an address-indexed mutable memory.
 //!
-//! Foundation layer: a `Mem` (association list of (addr, val)) with `read`/
-//! `write`, the McCarthy read-over-write axiom (framing), and a concrete
-//! in-place reverse that *executes* on the model. The general inductive
-//! in-place-reverse correctness proof builds on this — see `m3_inplace_reverse`.
+//! What works here:
+//! - A `Mem` (association list of (addr, val)) with `read`/`write`, admitted.
+//! - The in-place reverse *executes* on the model (`[1,2,3] → [3,2,1]`).
+//! - McCarthy read-over-write framing (`read_write`) — one-step `simp`.
+//! - Induction *over memory structure* (`map_id_preserves_read`).
+//! - Address-disequality arithmetic (`nat_neq_succ`).
+//! - `case_on` over compound expressions (`and_idem`).
+//!
+//! The boundary we hit (see ROADMAP "M3 finding"): the *general* address-indexed
+//! in-place reverse is NOT reachable with the current foundation. Its correctness
+//! needs a framing lemma of the form `lt(a, b) = True ⊢ read(store/loop…, a)
+//! unchanged`, i.e. an equation with a **precondition**. Our claims/lemmas are
+//! unconditional, so `induct` cannot carry the precondition into the induction
+//! hypothesis. `case_on` handles disequalities that arise *within* one goal, but
+//! cannot supply a hypothesis to an IH. The precise next foundation piece is
+//! conditional-premise equations, plus a small arithmetic library.
 
 use proving_bootstrap::obj_lang::ast::*;
 use proving_bootstrap::obj_lang::build::*;
@@ -111,6 +123,20 @@ pub fn module() -> Module {
             vec![param("m", "Mem"), param("a", "Nat"), param("v", "Nat")],
             "Mem",
             ctor("MCell", vec![var("a"), var("v"), var("m")]),
+        ),
+        // map_mem_id(m): rebuild the memory structure unchanged. A memory-
+        // recursive transform, used to show induction *over memory* works.
+        fndef(
+            "map_mem_id",
+            vec![param("m", "Mem")],
+            "Mem",
+            match_(
+                var("m"),
+                vec![
+                    arm("MNil", &[], ctor("MNil", vec![])),
+                    arm("MCell", &["a", "v", "rest"], ctor("MCell", vec![var("a"), var("v"), call("map_mem_id", vec![var("rest")])])),
+                ],
+            ),
         ),
         // swap(m, i, j) = write(write(m, i, read(m, j)), j, read(m, i))
         fndef(
@@ -281,9 +307,57 @@ pub fn and_idem() -> Theorem {
     )
 }
 
+/// forall m b, read(map_mem_id(m), b) = read(m, b)
+/// A general proof *by induction over memory*: the recursive transform and
+/// `read` both recurse on the `Mem` structure, so they align and no address
+/// arithmetic is needed. Demonstrates the induction-over-memory machinery works.
+pub fn map_id_preserves_read() -> Theorem {
+    theorem(
+        "map_id_preserves_read",
+        forall_eq(
+            vec![param("m", "Mem"), param("b", "Nat")],
+            call("read", vec![call("map_mem_id", vec![var("m")]), var("b")]),
+            call("read", vec![var("m"), var("b")]),
+        ),
+        induct(
+            "m",
+            vec![
+                case("MNil", steps(vec![simp(Side::Both)], refl())),
+                case("MCell", steps(vec![simp(Side::Both), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a, nat_eq(a, S(a)) = False — an address-disequality fact, the kind the
+/// (deferred) general in-place reverse needs to frame past writes.
+pub fn nat_neq_succ() -> Theorem {
+    theorem(
+        "nat_neq_succ",
+        forall_eq(vec![param("a", "Nat")], call("nat_eq", vec![var("a"), s(var("a"))]), fls()),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case("S", steps(vec![simp(Side::Lhs), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
 #[test]
 fn module_is_admitted() {
     assert_eq!(check_module(&module()), Ok(()));
+}
+
+#[test]
+fn induction_over_memory_works() {
+    assert_eq!(check_theorem(&module(), &Theory::default(), &map_id_preserves_read()), Ok(()), "map_id_preserves_read");
+}
+
+#[test]
+fn address_disequality_is_provable() {
+    assert_eq!(check_theorem(&module(), &Theory::default(), &nat_neq_succ()), Ok(()), "nat_neq_succ");
 }
 
 #[test]
