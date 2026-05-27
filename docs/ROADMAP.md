@@ -268,7 +268,45 @@ elimination, not a new axiom.
   by a uniform double-induction pattern (induct the var that turns a stuck premise
   into a refutable constructor clash for `Absurd`).
 
+### M4 — actual wasm intermediary (in progress, 2026-05-27)
+
+The thesis made literal: lower the algorithm to a real machine and prove the
+lowering, demonstrating that refinement **chains** — `wasm ⊑ rev_loop ⊑ rev`,
+with M3 already supplying the second link. Set with the user; same one-dragon-at-
+a-time discipline as M3 (`Nat` operands, defer i32/modular).
+
+**The VM** (`tests/common/wasm.rs`): a minimal *structured* wasm interpreter, in
+the object language. Key design forces, all from the language itself:
+- The mutual-recursion ban + structural-recursion rule kill the textbook
+  `exec_instr`/`exec_seq` pair. So: one non-recursive `step` (one machine step),
+  driven by `run(cfg, fuel)` recursing structurally on `fuel`. No existentials in
+  our logic ⇒ we can't say "halts in some fuel"; we run an exact, concrete fuel
+  (and universal-`n` will need fuel as a closed `f(n)` — also a cost bound).
+- **Linear memory *is* our `Mem`**, so `ILoad`/`IStore` unfold to `read`/`write`
+  and the entire M3 framing toolkit applies; the chain to `rev_loop` is direct,
+  with no representation-mapping between wasm bytes and the abstract memory.
+- Structured control flow (`block`/`loop`/`br`/`br_if`) via an explicit control
+  stack of frames; a frame's `restart` field is the whole trick distinguishing
+  loop (back-branch re-enters) from block (branch exits forward). ~12 instructions.
+
+**Done ✅ (2026-05-27):** the VM is admitted (`check_module`), executes the
+reverse, and is proven correct **for concrete lengths over symbolic memory**
+(`n = 1..5`): both `wasm ⊑ rev_loop` (the new link) and `wasm = rev` (end to end).
+With `n` concrete the control flow unfolds completely and only memory stays
+symbolic, so both sides reduce under `simp` to the same `read(m,k)` leaves — pure
+computation, the M3 `proves_reverse_for_fixed_sizes` pattern reached from real
+bytecode. No new foundational gap surfaced for the concrete case.
+
+**Open — universal `n`:** the simulation proof. A relation between VM state
+(stack, locals, PC/control stack, memory) and the abstract `rev_loop` state,
+preserved across one source-iteration's worth of VM micro-steps, with fuel a
+closed `f(n)`. This is the analogue of M3's per-position invariant one level down,
+and is where we expect a real new foundational want (as conditional equations and
+∀-instantiation were in M3). QoL likely needed first: a goal-stepping inspector
+and a controlled single-`step` tactic (M3 showed `simp` over-reduces).
+
 ### Later / decide-after
+- [ ] Universal-`n` wasm simulation proof (the open M4 piece above).
 - [ ] Make the heavy end-to-end proofs always-on (they are `#[ignore]`d for speed
       because they rebuild a search-constructed `Theory` each run, ~45s). Fix:
       cache the searched leaf proofs (serialize the found `Proof`s) so the theory
@@ -358,3 +396,10 @@ only if hand-building becomes the bottleneck.
   themed modules (`tests/common/{model,framing,arith,spec,reverse}.rs` + a thin
   `tests/m3.rs`), dropped 6 authoring-scaffolding tests, wrote `M3-WALKTHROUGH.md`.
   27 passed + 5 ignored (the heavy end-to-end proofs), clippy clean.
+- 2026-05-27: **M4 started — structured-wasm VM, concrete-n correctness.** Built a
+  minimal structured-wasm interpreter in the object language (`tests/common/
+  wasm.rs`); it is admitted, executes the reverse, and is proven correct for
+  concrete lengths over symbolic memory (`wasm ⊑ rev_loop` and `wasm = rev`,
+  n = 1..5) by pure computation. Linear memory reuses `Mem`; control flow via a
+  frame stack with a `restart` field. Open: the universal-`n` simulation proof.
+  31 passed + 5 ignored, clippy clean.

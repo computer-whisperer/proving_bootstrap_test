@@ -1,7 +1,10 @@
 //! M4 — a minimal *structured* wasm VM, in the object language, and the in-place
-//! reverse expressed as wasm. This is the executing slice: the VM runs and we
-//! check `[1,2,3,4] → [4,3,2,1]`. The correctness proof (wasm ⊑ rev_loop, then
-//! chain with M3) comes next.
+//! reverse expressed as wasm. The VM runs (`[1,2,3,4] → [4,3,2,1]`) and is proven
+//! correct **for concrete lengths over symbolic memory**: both wasm ⊑ rev_loop
+//! (the new refinement link) and wasm = `rev` (end to end) for n = 1..5, by pure
+//! computation. Universal-`n` needs a simulation invariant (a relation between VM
+//! state and the abstract `rev_loop` state, preserved per source iteration) — the
+//! open next step, the analogue of M3's per-position invariant one level down.
 //!
 //! Design (see the discussion in the session / `ROADMAP.md` M4):
 //! - The object language bans mutual recursion and demands structural recursion,
