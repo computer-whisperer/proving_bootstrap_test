@@ -403,3 +403,12 @@ only if hand-building becomes the bottleneck.
   n = 1..5) by pure computation. Linear memory reuses `Mem`; control flow via a
   frame stack with a `restart` field. Open: the universal-`n` simulation proof.
   31 passed + 5 ignored, clippy clean.
+- 2026-05-27: **M4 loop-step lemma + a `simp` engine fix.** Proved the per-iteration
+  simulation lemma (both cases): from a loop-top config, 23 VM steps = one swap
+  iteration when `i<j` (one-to-one with a `rev_loop` unfold), 5 steps to halt when
+  `i≥j`. Authoring used a new untrusted VM stepper (`show_cfg`/`vm_trace`).
+  *Finding:* `simp` was **exponential in time** when churning `run` past a stuck
+  guard (re-simplifying already-normal arguments; `simp(step^n(c))` recursed twice
+  per layer). Fixed by **memoizing `simp`** (pure speed-up; semantics preserved —
+  all 52 default + 8 heavy proofs unchanged). 8s→0.14s on the probe; the loop-step
+  lemmas then prove without the earlier peel-to-guard workaround.
