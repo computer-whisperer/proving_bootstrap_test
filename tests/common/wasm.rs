@@ -410,6 +410,171 @@ fn mcells(pairs: &[(u64, u64)]) -> Expr {
 }
 
 // ---------------------------------------------------------------------------
+// The simulation: relating `run` from a loop-top config to `rev_loop`.
+// The stepper trace established the invariant: at the top of the loop the
+// control stack always has the fixed shape `K` below, the value stack is empty,
+// and one iteration is exactly 23 micro-steps (when i < j) carrying
+// (i, j, mem) → (i+1, j-1, swap(mem, i, j)).
+// ---------------------------------------------------------------------------
+
+/// `S^k(e)`.
+fn succn(k: u64, e: Expr) -> Expr {
+    (0..k).fold(e, |a, _| s(a))
+}
+
+/// The fixed loop-top control stack `K`: the loop frame (code = restart = the
+/// body) over the (spent) block frame over the (spent) program frame.
+fn loop_top_ctrl() -> Expr {
+    let block = ctor("Frm", vec![fls(), ctor("CNil", vec![]), ctor("CNil", vec![])]);
+    ctor(
+        "KCons",
+        vec![
+            ctor("Frm", vec![tru(), rev_loop_body(), rev_loop_body()]),
+            ctor("KCons", vec![block.clone(), ctor("KCons", vec![block, ctor("KNil", vec![])])]),
+        ],
+    )
+}
+
+/// A loop-top configuration: empty stack, locals `[i, j, tmp]`, memory `mem`,
+/// control stack `K`.
+fn loop_top(i: Expr, j: Expr, tmp: Expr, mem: Expr) -> Expr {
+    cfgx(nil(), cons(i, cons(j, cons(tmp, nil()))), mem, loop_top_ctrl())
+}
+
+/// `run3`: three steps from a loop top reach the `br_if` with the guard
+/// `b2n(le(j,i))` computed on the stack. Proven by `simp` with a *variable* fuel
+/// tail `f` — so `simp` does exactly 3 (stuck-free) steps and stops, dodging the
+/// blowup that afflicts a long concrete run past an unresolved guard (see
+/// `probe_simp_fuel_growth`). The post-guard config `l3` is *computed* here, not
+/// hand-written.
+fn run3() -> Theorem {
+    let m = wasm_module();
+    let vars = vec![param("mem", "Mem"), param("i", "Nat"), param("j", "Nat"), param("tmp", "Nat"), param("f", "Nat")];
+    let lhs = call("run", vec![loop_top(var("i"), var("j"), var("tmp"), var("mem")), succn(3, var("f"))]);
+    let rhs = reduce_simp(&m, &lhs); // = run(<config at br_if>, f)
+    theorem("run3", forall_eq(vars, lhs.clone(), rhs), steps(vec![simp(Side::Both)], refl()))
+}
+
+/// The loop-step lemma (continue case), the heart of the simulation:
+///
+/// ```text
+/// forall mem i j tmp rest, [le(j, i) = False] ⊢
+///   run(loop_top(i, j, tmp, mem), 23 + rest)
+///     = run(loop_top(i+1, j-1, read(mem,i), swap(mem,i,j)), rest)
+/// ```
+///
+/// i.e. when `i < j` (so the guard `i ≥ j` is false), 23 VM steps perform one
+/// swap iteration and land back at the loop top with the pointers advanced — the
+/// one-to-one image of a single `rev_loop` unfold.
+///
+/// Proof shape: `run3` peels the first 3 steps to expose the guard, the `i < j`
+/// premise rewrites the stuck guard to `False` (br_if falls through), and `simp`
+/// then runs the remaining 20 *guard-resolved* (so stuck-free, linear) steps to
+/// the next loop top.
+fn loop_step_continue() -> Theorem {
+    let i1 = call("add", vec![var("i"), s(z())]);
+    let j1 = call("sub", vec![var("j"), s(z())]);
+    theorem(
+        "loop_step_continue",
+        forall_eq_cond(
+            vec![param("mem", "Mem"), param("i", "Nat"), param("j", "Nat"), param("tmp", "Nat"), param("rest", "Nat")],
+            vec![eqn(call("le", vec![var("j"), var("i")]), fls())],
+            call("run", vec![loop_top(var("i"), var("j"), var("tmp"), var("mem")), succn(23, var("rest"))]),
+            call(
+                "run",
+                vec![loop_top(i1, j1, call("read", vec![var("mem"), var("i")]), call("swap", vec![var("mem"), var("i"), var("j")])), var("rest")],
+            ),
+        ),
+        steps(
+            vec![
+                rewrite(lemma("run3"), Dir::Lr, Side::Lhs),  // peel 3 steps -> run(<at br_if>, S^20 rest)
+                rewrite_all(premise(0), Dir::Lr, Side::Lhs), // le(j,i) -> False (guard falls through)
+                simp(Side::Both),                            // run the remaining stuck-free steps to loop-top
+            ],
+            refl(),
+        ),
+    )
+}
+
+/// A halted configuration: empty stack, locals `[i, j, tmp]`, memory `mem`, and
+/// an empty control stack (`KNil`) — the VM has run off the end of the program.
+fn halted(i: Expr, j: Expr, tmp: Expr, mem: Expr) -> Expr {
+    cfgx(nil(), cons(i, cons(j, cons(tmp, nil()))), mem, ctor("KNil", vec![]))
+}
+
+/// The loop-step lemma (exit case): when `i ≥ j` (guard true), 5 VM steps from
+/// the loop top fall out of the loop and block and halt, leaving memory `mem`
+/// untouched — the image of `rev_loop` returning `m` at a false guard.
+///
+/// ```text
+/// forall mem i j tmp rest, [le(j, i) = True] ⊢
+///   run(loop_top(i, j, tmp, mem), 5 + rest) = run(halted(i, j, tmp, mem), rest)
+/// ```
+fn loop_step_exit() -> Theorem {
+    theorem(
+        "loop_step_exit",
+        forall_eq_cond(
+            vec![param("mem", "Mem"), param("i", "Nat"), param("j", "Nat"), param("tmp", "Nat"), param("rest", "Nat")],
+            vec![eqn(call("le", vec![var("j"), var("i")]), tru())],
+            call("run", vec![loop_top(var("i"), var("j"), var("tmp"), var("mem")), succn(5, var("rest"))]),
+            call("run", vec![halted(var("i"), var("j"), var("tmp"), var("mem")), var("rest")]),
+        ),
+        steps(
+            vec![
+                rewrite(lemma("run3"), Dir::Lr, Side::Lhs),  // peel 3 steps -> run(<at br_if>, S^2 rest)
+                rewrite_all(premise(0), Dir::Lr, Side::Lhs), // le(j,i) -> True (guard taken: br exits)
+                simp(Side::Both),                            // br_if exits the block, pop to halt
+            ],
+            refl(),
+        ),
+    )
+}
+
+/// run3, the shared peel-to-guard lemma used by both loop-step cases.
+fn vm_sim_theory() -> Theory {
+    check_theory(&wasm_module(), &[run3()]).expect("run3 checks")
+}
+
+#[test]
+fn proves_run3() {
+    let m = wasm_module();
+    assert_eq!(check_theorem(&m, &Theory::default(), &run3()), Ok(()));
+}
+
+#[test]
+fn proves_loop_step_continue() {
+    let m = wasm_module();
+    assert_eq!(check_theorem(&m, &vm_sim_theory(), &loop_step_continue()), Ok(()));
+}
+
+#[test]
+fn proves_loop_step_exit() {
+    let m = wasm_module();
+    assert_eq!(check_theorem(&m, &vm_sim_theory(), &loop_step_exit()), Ok(()));
+}
+
+fn expr_size(e: &Expr) -> usize {
+    match e {
+        Expr::Var { .. } => 1,
+        Expr::Ctor { args, .. } | Expr::Call { args, .. } => 1 + args.iter().map(expr_size).sum::<usize>(),
+        Expr::Match { scrutinee, arms } => 1 + expr_size(scrutinee) + arms.iter().map(|a| expr_size(&a.body)).sum::<usize>(),
+    }
+}
+
+#[test]
+#[ignore = "probe: how does simp(run(loop_top, S^N rest)) grow with N? (find the blowup)"]
+fn probe_simp_fuel_growth() {
+    let m = wasm_module();
+    let base = loop_top(var("i"), var("j"), var("tmp"), var("mem"));
+    for n in 0..=12 {
+        let e = call("run", vec![base.clone(), succn(n, var("rest"))]);
+        let t = std::time::Instant::now();
+        let r = reduce_simp(&m, &e);
+        println!("N={n:>2}  size={:>8}  {:?}", expr_size(&r), t.elapsed());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // QoL: an untrusted stepper + Config pretty-printer for authoring VM proofs.
 //
 // `step`/`run` produce deeply-nested `Cfg(...)` terms that are unreadable in the
