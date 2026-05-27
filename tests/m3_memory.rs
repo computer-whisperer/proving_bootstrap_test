@@ -1260,10 +1260,178 @@ pub fn sub_add_assoc() -> Theorem {
     )
 }
 
+/// Discharge a premise subgoal `X = V` that is exactly the goal's premise `i`.
+fn use_prem(i: usize) -> Proof {
+    steps(vec![rewrite(premise(i), Dir::Lr, Side::Lhs)], refl())
+}
+
+/// forall a b, [le(a, b) = True] ⊢ sub(a, b) = Z  (a ≤ b ⟹ a − b = 0)
+pub fn sub_z_of_le() -> Theorem {
+    theorem(
+        "sub_z_of_le",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), tru())],
+            call("sub", vec![var("a"), var("b")]),
+            z(),
+        ),
+        induct(
+            "b",
+            vec![
+                case(
+                    "Z",
+                    induct(
+                        "a",
+                        vec![case("Z", steps(vec![simp(Side::Lhs)], refl())), case("S", absurd(premise(0)))],
+                    ),
+                ),
+                case(
+                    "S",
+                    induct(
+                        "a",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall p n, [le(p, n) = False] ⊢ le(S(n), p) = True  (p > n ⟹ n+1 ≤ p)
+pub fn nle_imp_le_succ() -> Theorem {
+    theorem(
+        "nle_imp_le_succ",
+        forall_eq_cond(
+            vec![param("p", "Nat"), param("n", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("n")]), fls())],
+            call("le", vec![s(var("n")), var("p")]),
+            tru(),
+        ),
+        induct(
+            "p",
+            vec![
+                case("Z", absurd(premise(0))),
+                case(
+                    "S",
+                    induct(
+                        "n",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b, [le(a, b) = True, le(b, a) = True] ⊢ nat_eq(a, b) = True (antisym)
+pub fn le_antisym() -> Theorem {
+    theorem(
+        "le_antisym",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), tru()), eqn(call("le", vec![var("b"), var("a")]), tru())],
+            call("nat_eq", vec![var("a"), var("b")]),
+            tru(),
+        ),
+        induct(
+            "a",
+            vec![
+                case(
+                    "Z",
+                    induct(
+                        "b",
+                        vec![case("Z", steps(vec![simp(Side::Lhs)], refl())), case("S", absurd(premise(1)))],
+                    ),
+                ),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0), demote(1)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall i n p, [le(i, p) = True, le(S(i), p) = False] ⊢ sub(S(add(i, n)), p) = S(n)
+/// The low endpoint: when p = i, the mirror address is S(n). Premises pin p = i;
+/// induction on i and p stays aligned (the S(add..) survives each peel).
+pub fn mirror_lo() -> Theorem {
+    theorem(
+        "mirror_lo",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("n", "Nat"), param("p", "Nat")],
+            vec![
+                eqn(call("le", vec![var("i"), var("p")]), tru()),
+                eqn(call("le", vec![s(var("i")), var("p")]), fls()),
+            ],
+            call("sub", vec![s(call("add", vec![var("i"), var("n")])), var("p")]),
+            s(var("n")),
+        ),
+        induct(
+            "i",
+            vec![
+                case(
+                    "Z",
+                    induct(
+                        "p",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Both)], refl())),
+                            case("S", absurd(premise(1))), // le(S Z, S kp)=F is contradictory
+                        ],
+                    ),
+                ),
+                case(
+                    "S",
+                    induct(
+                        "p",
+                        vec![
+                            case("Z", absurd(premise(0))), // le(S ki, Z)=T is false
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0), demote(1)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
 /// All conditional building blocks, checked against a searched theory that holds
 /// the unconditional helpers they cite (add_succ_r, etc.).
 fn building_block_theory() -> Theory {
     searched_arith_theory(&module())
+}
+
+#[test]
+fn proves_mirror_induction_lemmas() {
+    let m = module();
+    let th = building_block_theory();
+    for thm in [sub_z_of_le(), nle_imp_le_succ(), le_antisym(), mirror_lo()] {
+        assert_eq!(check_theorem(&m, &th, &thm), Ok(()), "{}", thm.name);
+    }
 }
 
 #[test]
@@ -1409,7 +1577,285 @@ fn arith_claims() -> Vec<(String, ForallEq)> {
         "mirror_step".into(),
         forall_eq(nat3(), call("mirror", vec![var("i"), s(var("j")), var("p")]), call("mirror", vec![s(var("i")), var("j"), var("p")])),
     ));
+    // Unconditional sub/add helpers the reverse assembly cites (search finds all).
+    let abk = || vec![param("a", "Nat"), param("b", "Nat"), param("k", "Nat")];
+    v.push(("sub_le_l".into(), forall_eq(ab(), call("le", vec![call("sub", vec![var("a"), var("b")]), var("a")]), tru())));
+    v.push(("lt_eq_le_succ".into(), forall_eq(ab(), call("lt", vec![var("a"), var("b")]), call("le", vec![s(var("a")), var("b")]))));
+    v.push(("neq_add_succ".into(), forall_eq(ab(), call("nat_eq", vec![var("a"), call("add", vec![var("a"), s(var("b"))])]), fls())));
+    v.push((
+        "add_lt_cancel_r".into(),
+        forall_eq(
+            abk(),
+            call("lt", vec![call("add", vec![var("a"), var("k")]), call("add", vec![var("b"), var("k")])]),
+            call("lt", vec![var("a"), var("b")]),
+        ),
+    ));
     v
+}
+
+/// The full conditional toolkit, as a checked theory: searched unconditional
+/// lemmas first, then the hand-proved conditional ones in dependency order.
+/// Memoized — the search over the growing theory is the slow part.
+fn reverse_toolkit_theory() -> Theory {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Theory> = OnceLock::new();
+    CACHE.get_or_init(build_reverse_toolkit_theory).clone()
+}
+
+fn build_reverse_toolkit_theory() -> Theory {
+    let m = module();
+    let mut proven: Vec<Theorem> = Vec::new();
+    for (name, claim) in arith_claims() {
+        let th = check_theory(&m, &proven).unwrap();
+        let proof = find_proof(&m, &th, &claim, Limits::default())
+            .unwrap_or_else(|| panic!("search failed for {name}"));
+        proven.push(Theorem { name, claim, proof });
+    }
+    for thm in [
+        lt_imp_neq(),
+        lt_imp_neq_sym(),
+        le_succ_r(),
+        nle_imp_neq(),
+        nle_imp_nle_succ(),
+        le_trans(),
+        le_succ_l(),
+        nle_imp_neq_sym(),
+        lt_imp_le(),
+        lt_succ_nle(),
+        lt_add_pos(),
+        sub_succ_l(),
+        add_sub_cancel(),
+        sub_add_assoc(),
+        sub_z_of_le(),
+        nle_imp_le_succ(),
+        le_antisym(),
+        mirror_lo(),
+        mirror_form(),
+        lt_add_sub(),
+        mirror_neq_i(),
+        mirror_neq_succ(),
+        mirror_hi(),
+        eq_of_bounds(),
+    ] {
+        proven.push(thm);
+    }
+    check_theory(&m, &proven).unwrap()
+}
+
+#[test]
+fn builds_reverse_toolkit_theory() {
+    let _ = reverse_toolkit_theory();
+}
+
+/// forall i n p, [le(p, S(n)) = True] ⊢ sub(S(add(i, n)), p) = add(i, sub(S(n), p))
+/// Rewrites the mirror address into a canonical `add(i, …)` form (algebraic:
+/// add_succ_r to expose the S, then sub_add_assoc to pull `i` out).
+pub fn mirror_form() -> Theorem {
+    theorem(
+        "mirror_form",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("n", "Nat"), param("p", "Nat")],
+            vec![eqn(call("le", vec![var("p"), s(var("n"))]), tru())],
+            call("sub", vec![s(call("add", vec![var("i"), var("n")])), var("p")]),
+            call("add", vec![var("i"), call("sub", vec![s(var("n")), var("p")])]),
+        ),
+        steps(
+            vec![rewrite(lemma("add_succ_r"), Dir::Rl, Side::Lhs)], // S(add i n) -> add(i, S n)
+            rewrite_with(lemma("sub_add_assoc"), Dir::Lr, Side::Lhs, vec![use_prem(0)], refl()),
+        ),
+    )
+}
+
+/// forall i p c, [le(S(i), p) = True, le(p, c) = True] ⊢ lt(add(i, sub(c, p)), c) = True
+/// (i < p ≤ c ⟹ i + (c−p) < c). Purely algebraic: build the RHS `True` up into
+/// `lt(add(i,sub(c,p)), add(p,sub(c,p)))` (∀-instantiating the cancel's addend),
+/// then collapse `add(p,sub(c,p))` back to `c`.
+pub fn lt_add_sub() -> Theorem {
+    theorem(
+        "lt_add_sub",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("p", "Nat"), param("c", "Nat")],
+            vec![
+                eqn(call("le", vec![s(var("i")), var("p")]), tru()),
+                eqn(call("le", vec![var("p"), var("c")]), tru()),
+            ],
+            call("lt", vec![call("add", vec![var("i"), call("sub", vec![var("c"), var("p")])]), var("c")]),
+            tru(),
+        ),
+        steps(
+            vec![
+                rewrite(premise(0), Dir::Rl, Side::Rhs),           // True -> le(S i, p)
+                rewrite(lemma("lt_eq_le_succ"), Dir::Rl, Side::Rhs), // le(S i, p) -> lt(i, p)
+                rewrite_inst(
+                    lemma("add_lt_cancel_r"),
+                    Dir::Rl,
+                    Side::Rhs,
+                    vec![("k", call("sub", vec![var("c"), var("p")]))], // lt(i,p) -> lt(add(i,d), add(p,d))
+                ),
+            ],
+            rewrite_with(lemma("add_sub_cancel"), Dir::Lr, Side::Rhs, vec![use_prem(1)], refl()),
+        ),
+    )
+}
+
+/// Prove `le(p, S(n)) = True` from the goal's premise `i` = `le(p, n) = True`.
+fn le_p_succ_from(prem: usize) -> Proof {
+    rewrite_with(lemma("le_succ_r"), Dir::Lr, Side::Lhs, vec![use_prem(prem)], refl())
+}
+
+/// forall i n p, [le(p, n) = True] ⊢ nat_eq(i, sub(S(add(i, n)), p)) = False
+/// Interior, low side: the mirror address exceeds `i` (it is `i + (S n − p)` with
+/// `S n − p > 0`), so it differs from `i`.
+pub fn mirror_neq_i() -> Theorem {
+    theorem(
+        "mirror_neq_i",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("n", "Nat"), param("p", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("n")]), tru())],
+            call("nat_eq", vec![var("i"), call("sub", vec![s(call("add", vec![var("i"), var("n")])), var("p")])]),
+            fls(),
+        ),
+        rewrite_with(
+            lemma("mirror_form"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![le_p_succ_from(0)],
+            // goal: nat_eq(i, add(i, sub(S n, p))) = False
+            rewrite_with(
+                lemma("lt_imp_neq"),
+                Dir::Lr,
+                Side::Lhs,
+                vec![
+                    // lt(i, add(i, sub(S n, p))) = True, since sub(S n, p) > 0
+                    rewrite_with(
+                        lemma("lt_add_pos"),
+                        Dir::Lr,
+                        Side::Lhs,
+                        vec![rewrite_with(
+                            lemma("sub_succ_l"),
+                            Dir::Lr,
+                            Side::Lhs,
+                            vec![use_prem(0)],
+                            steps(vec![simp(Side::Lhs)], refl()),
+                        )],
+                        refl(),
+                    ),
+                ],
+                refl(),
+            ),
+        ),
+    )
+}
+
+/// forall i n p, [le(S(i), p) = True, le(p, n) = True] ⊢
+///   nat_eq(S(n), sub(S(add(i, n)), p)) = False
+/// Interior, high side: the mirror address is below `S n` (it is `i + (S n − p)`
+/// with `i < p`), so it differs from `S n`.
+pub fn mirror_neq_succ() -> Theorem {
+    theorem(
+        "mirror_neq_succ",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("n", "Nat"), param("p", "Nat")],
+            vec![
+                eqn(call("le", vec![s(var("i")), var("p")]), tru()),
+                eqn(call("le", vec![var("p"), var("n")]), tru()),
+            ],
+            call("nat_eq", vec![s(var("n")), call("sub", vec![s(call("add", vec![var("i"), var("n")])), var("p")])]),
+            fls(),
+        ),
+        rewrite_with(
+            lemma("mirror_form"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![le_p_succ_from(1)],
+            // goal: nat_eq(S n, add(i, sub(S n, p))) = False
+            rewrite_with(
+                lemma("lt_imp_neq_sym"),
+                Dir::Lr,
+                Side::Lhs,
+                vec![
+                    // lt(add(i, sub(S n, p)), S n) = True  (mirror < S n since i < p)
+                    rewrite_with(
+                        lemma("lt_add_sub"),
+                        Dir::Lr,
+                        Side::Lhs,
+                        vec![use_prem(0), le_p_succ_from(1)],
+                        refl(),
+                    ),
+                ],
+                refl(),
+            ),
+        ),
+    )
+}
+
+/// forall i n p, [le(p, S(n)) = True, le(p, n) = False] ⊢ sub(S(add(i, n)), p) = i
+/// The high endpoint: when p = S(n), the mirror address is `i`.
+pub fn mirror_hi() -> Theorem {
+    theorem(
+        "mirror_hi",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("n", "Nat"), param("p", "Nat")],
+            vec![
+                eqn(call("le", vec![var("p"), s(var("n"))]), tru()),
+                eqn(call("le", vec![var("p"), var("n")]), fls()),
+            ],
+            call("sub", vec![s(call("add", vec![var("i"), var("n")])), var("p")]),
+            var("i"),
+        ),
+        rewrite_with(
+            lemma("mirror_form"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![use_prem(0)],
+            // goal: add(i, sub(S n, p)) = i
+            rewrite_with(
+                lemma("sub_z_of_le"),
+                Dir::Lr,
+                Side::Lhs,
+                // sub(S n, p) = Z since S n <= p (because p > n)
+                vec![rewrite_with(lemma("nle_imp_le_succ"), Dir::Lr, Side::Lhs, vec![use_prem(1)], refl())],
+                steps(vec![rewrite(lemma("add_z_r"), Dir::Lr, Side::Lhs)], refl()), // add(i, Z) -> i
+            ),
+        ),
+    )
+}
+
+/// forall n p, [le(p, S(n)) = True, le(p, n) = False] ⊢ nat_eq(S(n), p) = True
+/// (n < p ≤ S n ⟹ p = S n), by antisymmetry.
+pub fn eq_of_bounds() -> Theorem {
+    theorem(
+        "eq_of_bounds",
+        forall_eq_cond(
+            vec![param("n", "Nat"), param("p", "Nat")],
+            vec![
+                eqn(call("le", vec![var("p"), s(var("n"))]), tru()),
+                eqn(call("le", vec![var("p"), var("n")]), fls()),
+            ],
+            call("nat_eq", vec![s(var("n")), var("p")]),
+            tru(),
+        ),
+        rewrite_with(
+            lemma("le_antisym"),
+            Dir::Lr,
+            Side::Lhs,
+            // nat_eq(S n, p): need le(S n, p) = True and le(p, S n) = True
+            vec![
+                rewrite_with(lemma("nle_imp_le_succ"), Dir::Lr, Side::Lhs, vec![use_prem(1)], refl()),
+                use_prem(0),
+            ],
+            refl(),
+        ),
+    )
+}
+
+#[test]
+fn proves_mirror_lemmas() {
+    let m = module();
+    let th = reverse_toolkit_theory();
+    for thm in [mirror_form(), lt_add_sub(), mirror_neq_i(), mirror_neq_succ(), mirror_hi(), eq_of_bounds()] {
+        assert_eq!(check_theorem(&m, &th, &thm), Ok(()), "{}", thm.name);
+    }
 }
 
 /// Build a theory by searching a proof for each claim in order.
