@@ -466,6 +466,28 @@ fn plain_rewrite_rejects_conditional_lemma() {
 }
 
 #[test]
+fn ex_falso_from_constructor_clash() {
+    // [Z = S(a)] is contradictory, so any goal holds.
+    let bogus_premise = theorem(
+        "exfalso1",
+        forall_eq_cond(vec![param("a", "Nat")], vec![eqn(z(), s(var("a")))], z(), s(z())),
+        absurd(premise(0)),
+    );
+    assert_eq!(check_theorem(&module(), &Theory::default(), &bogus_premise), Ok(()));
+}
+
+#[test]
+fn ex_falso_after_simplifying_premise() {
+    // [lt(Z, Z) = True] is contradictory once lt(Z,Z) reduces to False.
+    let thm = theorem(
+        "exfalso2",
+        forall_eq_cond(vec![], vec![eqn(call("lt", vec![z(), z()]), tru())], z(), s(z())),
+        absurd(premise(0)),
+    );
+    assert_eq!(check_theorem(&module(), &Theory::default(), &thm), Ok(()));
+}
+
+#[test]
 fn rewrite_with_checks_premise_count() {
     let theory = check_theory(&module(), &[read_write(), nat_eq_refl(), read_after_write_same(), read_write_frame()]).unwrap();
     let bad = theorem(

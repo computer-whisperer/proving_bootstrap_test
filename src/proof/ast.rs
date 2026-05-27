@@ -93,6 +93,10 @@ pub enum Proof {
     /// against the goal, then each is proven in the current context. Branches,
     /// so it carries a continuation `rest`. Acts on a single side.
     RewriteWith { using: EqRef, dir: Dir, side: Side, premises: Vec<Proof>, rest: Box<Proof> },
+    /// Ex falso: close *any* goal from a contradictory assumption. The cited
+    /// equation is `simp`-ed on both sides; if they are distinct constructors the
+    /// context is inconsistent, so the goal holds vacuously.
+    Absurd { using: EqRef },
 }
 
 /// One branch of an [`Proof::Induct`]: the proof for constructor `ctor`.

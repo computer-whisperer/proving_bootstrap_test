@@ -46,6 +46,11 @@ pub fn rewrite_with(using: EqRef, dir: Dir, side: Side, premises: Vec<Proof>, re
     Proof::RewriteWith { using, dir, side, premises, rest: Box::new(rest) }
 }
 
+/// Close any goal from a contradictory assumption.
+pub fn absurd(using: EqRef) -> Proof {
+    Proof::Absurd { using }
+}
+
 pub fn case(ctor: &str, proof: Proof) -> Case {
     Case { ctor: ctor.into(), proof }
 }

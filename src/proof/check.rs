@@ -35,6 +35,10 @@ pub enum ProofError {
     PremiseCountMismatch { expected: usize, got: usize },
     /// `RewriteWith` on `Side::Both` (a single side is required).
     RewriteWithBothSides,
+    /// `Absurd` with a conditional/quantified equation (needs a ground equation).
+    AbsurdNeedsGroundEq,
+    /// `Absurd` whose cited equation does not reduce to a constructor clash.
+    NotAbsurd { lhs: Box<Expr>, rhs: Box<Expr> },
 }
 
 /// A proof obligation: prove `premises ⊢ lhs = rhs` for all `vars`, with `hyps`
@@ -134,7 +138,27 @@ fn check_sequent(module: &Module, theory: &Theory, seq: &Sequent, proof: &Proof)
             let next = apply_rewrite_with(module, theory, seq, using, *dir, *side, premises)?;
             check_sequent(module, theory, &next, rest)
         }
+        Proof::Absurd { using } => {
+            let eq = resolve_eq(theory, seq, using)?;
+            if !eq.vars.is_empty() || !eq.premises.is_empty() {
+                return Err(ProofError::AbsurdNeedsGroundEq);
+            }
+            // The assumption eq.lhs = eq.rhs holds in this branch. If it reduces
+            // to distinct constructors it is false, so the branch is vacuous.
+            let l = simp(module, &eq.lhs);
+            let r = simp(module, &eq.rhs);
+            if head_clash(&l, &r) {
+                Ok(())
+            } else {
+                Err(ProofError::NotAbsurd { lhs: Box::new(l), rhs: Box::new(r) })
+            }
+        }
     }
+}
+
+/// Two terms whose heads are different constructors can never be equal.
+fn head_clash(a: &Expr, b: &Expr) -> bool {
+    matches!((a, b), (Expr::Ctor { name: x, .. }, Expr::Ctor { name: y, .. }) if x != y)
 }
 
 /// Rewrite with a conditional equation: match it against the chosen side, prove
