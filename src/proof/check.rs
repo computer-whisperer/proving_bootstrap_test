@@ -38,6 +38,19 @@ pub struct Sequent {
     pub rhs: Expr,
 }
 
+impl std::fmt::Display for Sequent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vars = self.vars.iter().map(|p| format!("{}:{}", p.name, p.ty)).collect::<Vec<_>>().join(", ");
+        writeln!(f, "vars: {vars}")?;
+        for (i, h) in self.hyps.iter().enumerate() {
+            let hv = h.vars.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ");
+            let q = if hv.is_empty() { String::new() } else { format!("forall {hv}, ") };
+            writeln!(f, "  hyp[{i}]: {q}{} = {}", h.lhs, h.rhs)?;
+        }
+        write!(f, "  goal: {} = {}", self.lhs, self.rhs)
+    }
+}
+
 /// Lemmas proven so far, citable by name.
 #[derive(Clone, Debug, Default)]
 pub struct Theory {
@@ -90,16 +103,39 @@ fn check_sequent(module: &Module, theory: &Theory, seq: &Sequent, proof: &Proof)
         }
         Proof::Induct { var, cases } => {
             let subgoals = do_induct(module, seq, var)?;
-            for (ctor, subgoal) in subgoals {
-                let case = cases
-                    .iter()
-                    .find(|c| c.ctor == ctor)
-                    .ok_or(ProofError::MissingCase { ctor: ctor.clone() })?;
-                check_sequent(module, theory, &subgoal, &case.proof)?;
-            }
-            Ok(())
+            check_branches(module, theory, subgoals, cases)
+        }
+        Proof::CaseOn { scrutinee, ty, cases } => {
+            let subgoals = do_case_on(module, seq, scrutinee, ty)?;
+            check_branches(module, theory, subgoals, cases)
         }
     }
+}
+
+fn check_branches(
+    module: &Module,
+    theory: &Theory,
+    subgoals: Vec<(String, Sequent)>,
+    cases: &[Case],
+) -> Result<(), ProofError> {
+    for (ctor, subgoal) in subgoals {
+        let case = cases
+            .iter()
+            .find(|c| c.ctor == ctor)
+            .ok_or(ProofError::MissingCase { ctor: ctor.clone() })?;
+        check_sequent(module, theory, &subgoal, &case.proof)?;
+    }
+    Ok(())
+}
+
+/// Run a list of non-branching steps against a sequent, returning the resulting
+/// goal. For inspecting intermediate states while authoring proofs.
+pub fn run_steps(module: &Module, theory: &Theory, seq: &Sequent, steps: &[Step]) -> Result<Sequent, ProofError> {
+    let mut s = seq.clone();
+    for step in steps {
+        s = apply_step(module, theory, &s, step)?;
+    }
+    Ok(s)
 }
 
 // --- steps
@@ -119,7 +155,7 @@ fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) -> R
         Step::Simp { side } => {
             apply_side(&mut next, *side, |e| Ok(simp(module, e)))?;
         }
-        Step::Rewrite { using, dir, side } => {
+        Step::Rewrite { using, dir, side, all } => {
             let eq = resolve_eq(theory, seq, using)?;
             let (pat, rep) = match dir {
                 Dir::Lr => (&eq.lhs, &eq.rhs),
@@ -127,7 +163,12 @@ fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) -> R
             };
             let pat_vars: HashSet<String> = eq.vars.iter().map(|p| p.name.clone()).collect();
             apply_side(&mut next, *side, |e| {
-                rewrite_first(e, pat, rep, &pat_vars).ok_or(ProofError::RewriteNoMatch)
+                if *all {
+                    let (out, changed) = rewrite_all_pass(e, pat, rep, &pat_vars);
+                    if changed { Ok(out) } else { Err(ProofError::RewriteNoMatch) }
+                } else {
+                    rewrite_first(e, pat, rep, &pat_vars).ok_or(ProofError::RewriteNoMatch)
+                }
             })?;
         }
     }
@@ -247,6 +288,47 @@ fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, S
     Ok(out)
 }
 
+// --- case analysis on an expression
+//
+// Splitting on the constructors of `scrutinee`'s type is exhaustive (every value
+// is some constructor), so assuming `scrutinee = C(fresh…)` in each branch is
+// sound. Unlike induction there is no hypothesis about subterms, and the goal is
+// not substituted — the branch's equation lets the proof rewrite the scrutinee.
+
+fn do_case_on(module: &Module, seq: &Sequent, scrutinee: &Expr, ty: &str) -> Result<Vec<(String, Sequent)>, ProofError> {
+    let tydef = module.type_def(ty).ok_or_else(|| ProofError::UnknownType(ty.to_string()))?;
+
+    let mut used: HashSet<String> = seq.vars.iter().map(|p| p.name.clone()).collect();
+    used.extend(free_vars(&seq.lhs));
+    used.extend(free_vars(&seq.rhs));
+    used.extend(free_vars(scrutinee));
+    for h in &seq.hyps {
+        used.extend(free_vars(&h.lhs));
+        used.extend(free_vars(&h.rhs));
+    }
+
+    let mut out = Vec::new();
+    for ctor in &tydef.ctors {
+        let mut fields: Vec<Param> = Vec::new();
+        for fty in &ctor.fields {
+            let name = fresh_name(&used);
+            used.insert(name.clone());
+            fields.push(Param { name, ty: fty.clone() });
+        }
+        let ctor_expr = Expr::Ctor {
+            name: ctor.name.clone(),
+            args: fields.iter().map(|f| Expr::Var { name: f.name.clone() }).collect(),
+        };
+        let mut vars = seq.vars.clone();
+        vars.extend(fields);
+        let mut hyps = seq.hyps.clone();
+        // scrutinee = C(fresh…), usable as a left-to-right rewrite.
+        hyps.push(ForallEq { vars: Vec::new(), lhs: scrutinee.clone(), rhs: ctor_expr });
+        out.push((ctor.name.clone(), Sequent { vars, hyps, lhs: seq.lhs.clone(), rhs: seq.rhs.clone() }));
+    }
+    Ok(out)
+}
+
 // --- first-order matching and rewriting
 //
 // Patterns are applicative (Var / Ctor / Call); a pattern `Match` is required to
@@ -267,6 +349,43 @@ fn rewrite_first(e: &Expr, pat: &Expr, rep: &Expr, pat_vars: &HashSet<String>) -
         Expr::Match { scrutinee, arms } => rewrite_first(scrutinee, pat, rep, pat_vars)
             .map(|s| Expr::Match { scrutinee: Box::new(s), arms: arms.clone() }),
     }
+}
+
+/// Replace every (non-nested) occurrence in one top-down pass. Does not descend
+/// into a replacement, so it terminates even if `rep` re-contains `pat`.
+fn rewrite_all_pass(e: &Expr, pat: &Expr, rep: &Expr, pat_vars: &HashSet<String>) -> (Expr, bool) {
+    let mut binding = HashMap::new();
+    if match_expr(pat, e, pat_vars, &mut binding) {
+        return (subst(rep, &binding), true);
+    }
+    match e {
+        Expr::Var { .. } => (e.clone(), false),
+        Expr::Ctor { name, args } => {
+            let (args, changed) = rewrite_all_in_args(args, pat, rep, pat_vars);
+            (Expr::Ctor { name: name.clone(), args }, changed)
+        }
+        Expr::Call { name, args } => {
+            let (args, changed) = rewrite_all_in_args(args, pat, rep, pat_vars);
+            (Expr::Call { name: name.clone(), args }, changed)
+        }
+        Expr::Match { scrutinee, arms } => {
+            let (s, changed) = rewrite_all_pass(scrutinee, pat, rep, pat_vars);
+            (Expr::Match { scrutinee: Box::new(s), arms: arms.clone() }, changed)
+        }
+    }
+}
+
+fn rewrite_all_in_args(args: &[Expr], pat: &Expr, rep: &Expr, pat_vars: &HashSet<String>) -> (Vec<Expr>, bool) {
+    let mut changed = false;
+    let out = args
+        .iter()
+        .map(|a| {
+            let (a, c) = rewrite_all_pass(a, pat, rep, pat_vars);
+            changed |= c;
+            a
+        })
+        .collect();
+    (out, changed)
 }
 
 fn rewrite_in_args(args: &[Expr], pat: &Expr, rep: &Expr, pat_vars: &HashSet<String>) -> Option<Vec<Expr>> {

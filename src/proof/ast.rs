@@ -57,8 +57,9 @@ pub enum Step {
     /// Guarded δ+ι: reduce, unfolding calls only where they make progress and
     /// keeping stuck calls in `f(args)` form. The usual workhorse.
     Simp { side: Side },
-    /// Replace equals by equals using a hypothesis or lemma.
-    Rewrite { using: EqRef, dir: Dir, side: Side },
+    /// Replace equals by equals using a hypothesis or lemma. `all` rewrites
+    /// every occurrence in one pass; otherwise only the first.
+    Rewrite { using: EqRef, dir: Dir, side: Side, all: bool },
 }
 
 /// A proof tree.
@@ -69,9 +70,13 @@ pub enum Proof {
     Refl,
     /// Apply `step`, then continue with `rest`.
     Then { step: Step, rest: Box<Proof> },
-    /// The only branching step: induct on `var`, with one sub-proof per
-    /// constructor of its type.
+    /// Induct on `var`, with one sub-proof per constructor of its type.
     Induct { var: String, cases: Vec<Case> },
+    /// Case-split on the value of an arbitrary expression `scrutinee` of type
+    /// `ty`. Each branch assumes the equation `scrutinee = C(fresh…)` as a
+    /// hypothesis (no induction hypothesis). `ty` is named explicitly since
+    /// there is no type checker. Used for Bool splits like `eq(a, b)`.
+    CaseOn { scrutinee: Expr, ty: String, cases: Vec<Case> },
 }
 
 /// One branch of an [`Proof::Induct`]: the proof for constructor `ctor`.

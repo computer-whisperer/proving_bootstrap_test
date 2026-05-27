@@ -2,6 +2,8 @@
 //! decision 5). Everything persists as serde + JSON; this type is what the
 //! proof layer will inspect, unfold, and rewrite, so it is kept small and flat.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// A reference to a type. The pilot is monomorphic, so a type is just its name
@@ -84,4 +86,38 @@ pub struct Arm {
     pub ctor: String,
     pub binds: Vec<String>,
     pub body: Expr,
+}
+
+/// Readable rendering of terms, for inspecting goals while authoring proofs.
+/// (Constructors and calls render identically as `name(args)`; context tells
+/// them apart.)
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expr::Var { name } => write!(f, "{name}"),
+            Expr::Ctor { name, args } | Expr::Call { name, args } => {
+                if args.is_empty() {
+                    write!(f, "{name}")
+                } else {
+                    let inner = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                    write!(f, "{name}({inner})")
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                let arms = arms
+                    .iter()
+                    .map(|a| {
+                        let pat = if a.binds.is_empty() {
+                            a.ctor.clone()
+                        } else {
+                            format!("{}({})", a.ctor, a.binds.join(", "))
+                        };
+                        format!("{pat} => {}", a.body)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "match {scrutinee} {{ {arms} }}")
+            }
+        }
+    }
 }

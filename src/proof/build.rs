@@ -27,6 +27,10 @@ pub fn induct(var: &str, cases: Vec<Case>) -> Proof {
     Proof::Induct { var: var.into(), cases }
 }
 
+pub fn case_on(scrutinee: Expr, ty: &str, cases: Vec<Case>) -> Proof {
+    Proof::CaseOn { scrutinee, ty: ty.into(), cases }
+}
+
 pub fn case(ctor: &str, proof: Proof) -> Case {
     Case { ctor: ctor.into(), proof }
 }
@@ -45,7 +49,11 @@ pub fn simp(side: Side) -> Step {
 }
 
 pub fn rewrite(using: EqRef, dir: Dir, side: Side) -> Step {
-    Step::Rewrite { using, dir, side }
+    Step::Rewrite { using, dir, side, all: false }
+}
+
+pub fn rewrite_all(using: EqRef, dir: Dir, side: Side) -> Step {
+    Step::Rewrite { using, dir, side, all: true }
 }
 
 // Equation references

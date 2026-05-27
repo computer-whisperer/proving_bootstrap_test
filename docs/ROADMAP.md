@@ -104,11 +104,45 @@ workhorse; `unfold`/`reduce` remain for fine control. A termination bug surfaced
 and was fixed: `simp` must **not** reduce under a stuck `match`'s arms (doing so
 δ-unfolds recursive calls in the arm bodies forever).
 
-### M3 — Stretch / decide-after-M2 (likely out of pilot)
-- [ ] Property-based counterexample search over executable tests (free, since
-      tests are runnable `Bool` functions): run before proving, surface a failing
-      input fast.
-- [ ] Pluggable untrusted proof search behind the kernel (the slot an LLM fills).
+### M3 — Bridge to hardware-realistic code (the chosen next direction)
+
+Goal (set with the user): prove an **in-place array reverse over an
+address-indexed mutable memory** equal to the functional `rev`. This is the
+smallest honest form of the real dragon — mutation, framing, a loop invariant,
+index arithmetic — and if it works, a narrow wasm interpreter becomes plausible.
+
+Deliberate scoping: **`Nat` indices/words first; machine ints (i32, modular) are
+a separate later step.** Fighting bitvector arithmetic *and* framing at once
+would teach us nothing about the framing question, which is the determining one.
+Memory is an address-indexed association list with `read`/`write` (the user
+OK'd this stand-in); McCarthy read-over-write gives framing without separation
+logic (sufficient for a single buffer).
+
+QoL built first to make memory proofs bearable:
+- [x] Goal-state visibility: `Display` for `Expr`/`Sequent` + `run_steps` to
+      inspect intermediate goals while authoring. `obj_lang/ast.rs`, `proof/check.rs`
+- [x] `case_on(expr, ty)` proof node — case-split on a compound expression (e.g.
+      `nat_eq(a,b)`), each branch assuming `expr = C(…)`. `proof/{ast,check}.rs`
+- [x] `rewrite_all` — rewrite every occurrence in one pass (memory terms repeat).
+
+Foundation layer ✅ done (2026-05-26): `tests/m3_memory.rs`
+- [x] Memory model (`Mem`, `read`, `write`, `ite`) + arithmetic (`lt`, `pred`,
+      `add`, `nat_eq`) admitted.
+- [x] Concrete in-place reverse **executes** on the model (`[1,2,3] → [3,2,1]`).
+- [x] McCarthy `read_write` framing lemma (one-step `simp`), `nat_eq_refl`,
+      `read_after_write_same`, and a `case_on` exercise (`and_idem`).
+
+In progress:
+- [ ] General `forall m n, arr(rev_loop(m, …), n) = rev(arr(m, n))` by induction
+      with the two-pointer loop invariant. This is the hard part; outcome (works
+      / needs more automation) is itself the finding.
+
+### Later / decide-after
+- [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library).
+- [ ] An instruction-set VM layer (decode/dispatch) for higher ISA fidelity.
+- [ ] Property-based counterexample search over executable tests.
+- [ ] Pluggable untrusted proof search behind the kernel (the LLM slot); a
+      `simplify` step (simp + lemma set) is the first automation to add there.
 
 ## Crate Layout (decided)
 
