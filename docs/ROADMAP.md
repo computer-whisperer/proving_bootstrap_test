@@ -175,14 +175,36 @@ a real kernel change, so it is a decision to make deliberately, not ram in.
 **New finding from attempting the arithmetic (2026-05-26).** Conditional
 equations unblock the framing lemmas, but pushing the supporting arithmetic
 (e.g. `lt(a,b)=True ⊢ nat_eq(a,b)=False`) surfaces a *further* gap: the boundary
-cases are **contradictory premises** (e.g. `lt(Z,Z)=True`), and exploiting them
-needs to *simplify/rewrite inside a hypothesis* and close a goal from a
-constructor-clash (`True = False`) — ex-falso. The kernel currently rewrites
-only the **goal**, not hypotheses. So the *full* two-pointer in-place reverse
-needs, beyond conditional equations: (a) hypothesis manipulation (`simp`/rewrite
-in a hyp) + ex-falso on constructor clash, and (b) an arithmetic lemma library
-(cleanest via an unconditional trichotomy lemma to sidestep ex-falso). Both are
-modest, well-scoped additions — the path is open, not blocked.
+cases are **contradictory premises** (e.g. `lt(Z,Z)=True`). Exploiting them needs
+ex-falso (close a goal from `simp`-ing an assumption to a constructor clash).
+
+**Ex-falso — IMPLEMENTED ✅ (2026-05-26).** `Proof::Absurd { using }` simps both
+sides of a cited ground assumption; distinct constructors ⟹ the branch is
+vacuous, so any goal holds. Tested on `Z = S(a)` and on `lt(Z,Z) = True`.
+
+**In-place reverse — substantial progress (2026-05-26).** `tests/m3_memory.rs`
+- Redefined `rev_loop` to recurse structurally on `j` (no fuel parameter / no
+  "enough fuel" premise).
+- Proved the three **swap framing** lemmas (`swap_at_j`, `swap_at_i` [cond.],
+  `swap_elsewhere` [2 premises]) — the memory-reasoning core of the loop.
+- Proved **`reverse = rev` for arbitrary memory contents at fixed sizes**
+  (`n = 1..5`): with concrete indices every `nat_eq`/`lt` reduces and the list
+  structure is concrete, so the *whole* pipeline (loop → swap → framing →
+  functional `rev`) computes under `simp`, leaving only the symbolic values
+  `read(m, k)` — which agree on both sides. This is a genuine general-memory
+  reverse-correctness result, just not universally quantified over `n`.
+
+**What "full" (universal `n`) still needs — honest recalibration.** My earlier
+"a few focused steps" estimate was too optimistic; having gotten into it: the
+unbounded-`n` loop invariant is a real arithmetic development — a per-position
+invariant (`read(rev_loop(m,i,j), p) = if i≤p≤j then read(m, i+j−p) else
+read(m,p)`) proven by induction on `j`, needing ~a dozen `le`/`sub`/`add`/mirror
+lemmas (each a small induction) and a multi-case step (p vs `i`, `j`, the
+mirror), composed via the swap framing lemmas above. **No new conceptual gaps**
+— every blocker is cleared and the pieces are proven; what remains is *volume*.
+That volume is exactly the job of the untrusted automation/LLM layer (kernel
+re-checks each step), which is the strongest argument for building that layer
+next rather than hand-grinding the arithmetic.
 
 ### Later / decide-after
 - [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library).
@@ -245,9 +267,10 @@ only if hand-building becomes the bottleneck.
   equations**.
 - 2026-05-26: **Conditional equations implemented + validated** (`ForallEq`
   premises, `Sequent` premises, `EqRef::Premise`, `RewriteWith`, soundness
-  guard). Proves the different-address framing lemma and exercises the
-  conditional-IH path. 29 tests, clippy clean. Attempting the supporting
-  arithmetic surfaced the *next* needed piece: hypothesis manipulation + ex-falso
-  (kernel currently rewrites only the goal). The full two-pointer reverse is
-  unblocked but is a real proof-engineering push needing that + an arithmetic
-  library — decision point for whether to continue.
+  guard). 29 tests.
+- 2026-05-26: **Ex-falso + reverse progress.** Added `Absurd` (ex-falso). Proved
+  the swap framing lemmas and `reverse = rev` for arbitrary memory at fixed
+  sizes (n=1..5) — the whole pipeline composes through the kernel. 33 tests,
+  clippy clean. The remaining gap to a *universal-n* reverse is the unbounded
+  loop invariant: pure arithmetic volume (~dozen lemmas + multi-case induction),
+  no new conceptual blockers — i.e. automation-layer work, not kernel work.

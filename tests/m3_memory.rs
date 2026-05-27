@@ -500,6 +500,33 @@ fn module_is_admitted() {
     assert_eq!(check_module(&module()), Ok(()));
 }
 
+/// forall m, arr_from(rev_loop(m, 0, n-1), 0, n) = rev(arr_from(m, 0, n))
+/// for a FIXED size n, but arbitrary memory contents. Concrete indices make
+/// every nat_eq/lt reduce and the list structure concrete, so the whole
+/// pipeline (loop → swap → framing → functional rev) computes under `simp`,
+/// leaving only the symbolic values read(m,k) — which match on both sides.
+fn reverse_fixed_size(n: u64) -> Theorem {
+    theorem(
+        "reverse_fixed",
+        forall_eq(
+            vec![param("m", "Mem")],
+            call("arr_from", vec![call("rev_loop", vec![var("m"), z(), nat(n - 1)]), z(), nat(n)]),
+            call("rev", vec![call("arr_from", vec![var("m"), z(), nat(n)])]),
+        ),
+        steps(vec![simp(Side::Both)], refl()),
+    )
+}
+
+#[test]
+fn proves_reverse_for_fixed_sizes_general_memory() {
+    // In-place reverse = functional rev, for arbitrary memory contents, at fixed
+    // lengths. The general-n proof needs the unbounded loop invariant (see ROADMAP).
+    let m = module();
+    for n in 1..=5 {
+        assert_eq!(check_theorem(&m, &Theory::default(), &reverse_fixed_size(n)), Ok(()), "n = {n}");
+    }
+}
+
 #[test]
 fn proves_swap_framing() {
     let theory = check_theory(&module(), &[read_write(), nat_eq_refl()]).unwrap();
