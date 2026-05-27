@@ -441,20 +441,6 @@ fn loop_top(i: Expr, j: Expr, tmp: Expr, mem: Expr) -> Expr {
     cfgx(nil(), cons(i, cons(j, cons(tmp, nil()))), mem, loop_top_ctrl())
 }
 
-/// `run3`: three steps from a loop top reach the `br_if` with the guard
-/// `b2n(le(j,i))` computed on the stack. Proven by `simp` with a *variable* fuel
-/// tail `f` — so `simp` does exactly 3 (stuck-free) steps and stops, dodging the
-/// blowup that afflicts a long concrete run past an unresolved guard (see
-/// `probe_simp_fuel_growth`). The post-guard config `l3` is *computed* here, not
-/// hand-written.
-fn run3() -> Theorem {
-    let m = wasm_module();
-    let vars = vec![param("mem", "Mem"), param("i", "Nat"), param("j", "Nat"), param("tmp", "Nat"), param("f", "Nat")];
-    let lhs = call("run", vec![loop_top(var("i"), var("j"), var("tmp"), var("mem")), succn(3, var("f"))]);
-    let rhs = reduce_simp(&m, &lhs); // = run(<config at br_if>, f)
-    theorem("run3", forall_eq(vars, lhs.clone(), rhs), steps(vec![simp(Side::Both)], refl()))
-}
-
 /// The loop-step lemma (continue case), the heart of the simulation:
 ///
 /// ```text
@@ -467,10 +453,10 @@ fn run3() -> Theorem {
 /// swap iteration and land back at the loop top with the pointers advanced — the
 /// one-to-one image of a single `rev_loop` unfold.
 ///
-/// Proof shape: `run3` peels the first 3 steps to expose the guard, the `i < j`
-/// premise rewrites the stuck guard to `False` (br_if falls through), and `simp`
-/// then runs the remaining 20 *guard-resolved* (so stuck-free, linear) steps to
-/// the next loop top.
+/// Proof shape: `simp` runs to the stuck `br_if` guard (cheap now that `simp` is
+/// memoized — see `probe_simp_fuel_growth`), the `i < j` premise rewrites the
+/// guard to `False` so the branch falls through, and `simp` finishes the
+/// iteration, landing at the next loop top.
 fn loop_step_continue() -> Theorem {
     let i1 = call("add", vec![var("i"), s(z())]);
     let j1 = call("sub", vec![var("j"), s(z())]);
@@ -487,9 +473,9 @@ fn loop_step_continue() -> Theorem {
         ),
         steps(
             vec![
-                rewrite(lemma("run3"), Dir::Lr, Side::Lhs),  // peel 3 steps -> run(<at br_if>, S^20 rest)
+                simp(Side::Both),                            // run to the stuck br_if guard (cheap now: simp is memoized)
                 rewrite_all(premise(0), Dir::Lr, Side::Lhs), // le(j,i) -> False (guard falls through)
-                simp(Side::Both),                            // run the remaining stuck-free steps to loop-top
+                simp(Side::Both),                            // finish the iteration, land at the next loop-top
             ],
             refl(),
         ),
@@ -521,7 +507,7 @@ fn loop_step_exit() -> Theorem {
         ),
         steps(
             vec![
-                rewrite(lemma("run3"), Dir::Lr, Side::Lhs),  // peel 3 steps -> run(<at br_if>, S^2 rest)
+                simp(Side::Both),                            // run to the stuck br_if guard
                 rewrite_all(premise(0), Dir::Lr, Side::Lhs), // le(j,i) -> True (guard taken: br exits)
                 simp(Side::Both),                            // br_if exits the block, pop to halt
             ],
@@ -530,27 +516,16 @@ fn loop_step_exit() -> Theorem {
     )
 }
 
-/// run3, the shared peel-to-guard lemma used by both loop-step cases.
-fn vm_sim_theory() -> Theory {
-    check_theory(&wasm_module(), &[run3()]).expect("run3 checks")
-}
-
-#[test]
-fn proves_run3() {
-    let m = wasm_module();
-    assert_eq!(check_theorem(&m, &Theory::default(), &run3()), Ok(()));
-}
-
 #[test]
 fn proves_loop_step_continue() {
     let m = wasm_module();
-    assert_eq!(check_theorem(&m, &vm_sim_theory(), &loop_step_continue()), Ok(()));
+    assert_eq!(check_theorem(&m, &Theory::default(), &loop_step_continue()), Ok(()));
 }
 
 #[test]
 fn proves_loop_step_exit() {
     let m = wasm_module();
-    assert_eq!(check_theorem(&m, &vm_sim_theory(), &loop_step_exit()), Ok(()));
+    assert_eq!(check_theorem(&m, &Theory::default(), &loop_step_exit()), Ok(()));
 }
 
 fn expr_size(e: &Expr) -> usize {
@@ -562,7 +537,7 @@ fn expr_size(e: &Expr) -> usize {
 }
 
 #[test]
-#[ignore = "probe: how does simp(run(loop_top, S^N rest)) grow with N? (find the blowup)"]
+#[ignore = "regression guard: simp(run(loop_top, S^N rest)) time stays ~flat in N (was exponential before simp memoization)"]
 fn probe_simp_fuel_growth() {
     let m = wasm_module();
     let base = loop_top(var("i"), var("j"), var("tmp"), var("mem"));
