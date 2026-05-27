@@ -39,6 +39,8 @@ pub enum ProofError {
     AbsurdNeedsGroundEq,
     /// `Absurd` whose cited equation does not reduce to a constructor clash.
     NotAbsurd { lhs: Box<Expr>, rhs: Box<Expr> },
+    /// A `with` instantiation named a variable the cited equation does not bind.
+    InstUnknownVar(String),
 }
 
 /// A proof obligation: prove `premises ⊢ lhs = rhs` for all `vars`, with `hyps`
@@ -138,8 +140,8 @@ fn check_sequent(module: &Module, theory: &Theory, seq: &Sequent, proof: &Proof)
             let subgoals = do_case_on(module, seq, scrutinee, ty)?;
             check_branches(module, theory, subgoals, cases)
         }
-        Proof::RewriteWith { using, dir, side, premises, rest } => {
-            let next = apply_rewrite_with(module, theory, seq, using, *dir, *side, premises)?;
+        Proof::RewriteWith { using, dir, side, with, premises, rest } => {
+            let next = apply_rewrite_with(module, theory, seq, using, *dir, *side, with, premises)?;
             check_sequent(module, theory, &next, rest)
         }
         Proof::Absurd { using } => {
@@ -167,6 +169,7 @@ fn head_clash(a: &Expr, b: &Expr) -> bool {
 
 /// Rewrite with a conditional equation: match it against the chosen side, prove
 /// each instantiated premise with the supplied sub-proof, then rewrite.
+#[allow(clippy::too_many_arguments)]
 fn apply_rewrite_with(
     module: &Module,
     theory: &Theory,
@@ -174,9 +177,10 @@ fn apply_rewrite_with(
     using: &EqRef,
     dir: Dir,
     side: Side,
+    inst: &[(String, Expr)],
     premise_proofs: &[Proof],
 ) -> Result<Sequent, ProofError> {
-    let eq = resolve_eq(theory, seq, using)?;
+    let eq = specialize(resolve_eq(theory, seq, using)?, inst)?;
     if premise_proofs.len() != eq.premises.len() {
         return Err(ProofError::PremiseCountMismatch { expected: eq.premises.len(), got: premise_proofs.len() });
     }
@@ -258,8 +262,8 @@ pub fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) 
         Step::Simp { side } => {
             apply_side(&mut next, *side, |e| Ok(simp(module, e)))?;
         }
-        Step::Rewrite { using, dir, side, all } => {
-            let eq = resolve_eq(theory, seq, using)?;
+        Step::Rewrite { using, dir, side, all, with } => {
+            let eq = specialize(resolve_eq(theory, seq, using)?, with)?;
             if !eq.premises.is_empty() {
                 return Err(ProofError::RewriteNeedsPremises);
             }
@@ -324,6 +328,27 @@ fn resolve_eq(theory: &Theory, seq: &Sequent, eqref: &EqRef) -> Result<ForallEq,
 
 fn subst_eq(e: &Equation, map: &HashMap<String, Expr>) -> Equation {
     Equation { lhs: subst(&e.lhs, map), rhs: subst(&e.rhs, map) }
+}
+
+/// ∀-elimination: instantiate the named variables of `eq` to the given terms,
+/// dropping them from the quantifier. Sound for any well-formed term. Lets a
+/// rewrite pin a "pivot" variable the conclusion match cannot infer (e.g. the
+/// middle term of transitivity).
+fn specialize(mut eq: ForallEq, inst: &[(String, Expr)]) -> Result<ForallEq, ProofError> {
+    if inst.is_empty() {
+        return Ok(eq);
+    }
+    let map: HashMap<String, Expr> = inst.iter().cloned().collect();
+    for (name, _) in inst {
+        if !eq.vars.iter().any(|p| &p.name == name) {
+            return Err(ProofError::InstUnknownVar(name.clone()));
+        }
+    }
+    eq.vars.retain(|p| !map.contains_key(&p.name));
+    eq.premises = eq.premises.iter().map(|e| subst_eq(e, &map)).collect();
+    eq.lhs = subst(&eq.lhs, &map);
+    eq.rhs = subst(&eq.rhs, &map);
+    Ok(eq)
 }
 
 // --- induction

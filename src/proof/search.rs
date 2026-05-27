@@ -132,7 +132,7 @@ fn candidate_steps(seq: &Sequent, theory: &Theory) -> Vec<Step> {
     let push_rewrites = |using: EqRef, steps: &mut Vec<Step>| {
         for dir in [Dir::Lr, Dir::Rl] {
             for all in [false, true] {
-                steps.push(Step::Rewrite { using: using.clone(), dir, side: Side::Both, all });
+                steps.push(Step::Rewrite { using: using.clone(), dir, side: Side::Both, all, with: Vec::new() });
             }
         }
     };

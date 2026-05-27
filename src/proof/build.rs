@@ -43,7 +43,21 @@ pub fn case_on(scrutinee: Expr, ty: &str, cases: Vec<Case>) -> Proof {
 /// Rewrite with a conditional equation; `premises` supplies one sub-proof per
 /// premise (in order), each proving the instantiated premise.
 pub fn rewrite_with(using: EqRef, dir: Dir, side: Side, premises: Vec<Proof>, rest: Proof) -> Proof {
-    Proof::RewriteWith { using, dir, side, premises, rest: Box::new(rest) }
+    Proof::RewriteWith { using, dir, side, with: Vec::new(), premises, rest: Box::new(rest) }
+}
+
+/// Like [`rewrite_with`], but pre-instantiates the cited equation's named
+/// ∀-variables (∀-elimination) — for "pivot" variables the match can't infer.
+pub fn rewrite_with_inst(
+    using: EqRef,
+    dir: Dir,
+    side: Side,
+    with: Vec<(&str, Expr)>,
+    premises: Vec<Proof>,
+    rest: Proof,
+) -> Proof {
+    let with = with.into_iter().map(|(n, e)| (n.to_string(), e)).collect();
+    Proof::RewriteWith { using, dir, side, with, premises, rest: Box::new(rest) }
 }
 
 /// Close any goal from a contradictory assumption.
@@ -69,11 +83,17 @@ pub fn simp(side: Side) -> Step {
 }
 
 pub fn rewrite(using: EqRef, dir: Dir, side: Side) -> Step {
-    Step::Rewrite { using, dir, side, all: false }
+    Step::Rewrite { using, dir, side, all: false, with: Vec::new() }
 }
 
 pub fn rewrite_all(using: EqRef, dir: Dir, side: Side) -> Step {
-    Step::Rewrite { using, dir, side, all: true }
+    Step::Rewrite { using, dir, side, all: true, with: Vec::new() }
+}
+
+/// Plain rewrite that pre-instantiates the cited equation's named ∀-variables.
+pub fn rewrite_inst(using: EqRef, dir: Dir, side: Side, with: Vec<(&str, Expr)>) -> Step {
+    let with = with.into_iter().map(|(n, e)| (n.to_string(), e)).collect();
+    Step::Rewrite { using, dir, side, all: false, with }
 }
 
 // Equation references

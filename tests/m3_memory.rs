@@ -939,12 +939,11 @@ pub fn nle_imp_nle_succ() -> Theorem {
 
 /// forall a b c, [le(a, b) = True, le(b, c) = True] ⊢ le(a, c) = True (transitivity)
 ///
-/// NOTE: this does NOT currently check. The middle term `b` appears only in the
-/// premises, not the conclusion `le(a, c)`, so when `RewriteWith` matches the
-/// conclusion it cannot determine `b` — the IH's premise obligation comes out as
-/// `le(a, b)` with `b` dangling. The rewrite-only kernel has no way to instantiate
-/// a lemma's "pivot" variable. Kept here to document the wall; the reverse proof
-/// needs transitivity, so this is the next kernel decision (lemma specialization).
+/// The middle term `b` appears only in the premises, not the conclusion
+/// `le(a, c)`, so matching the conclusion can't infer it. We pin it with `with`
+/// (∀-instantiation): in the S/S/S case the pivot is the field var `$1` that
+/// `induct b` introduces, so the IH (hyp 0) is specialized at `b := $1` before
+/// its two premises are discharged.
 pub fn le_trans() -> Theorem {
     theorem(
         "le_trans",
@@ -974,7 +973,14 @@ pub fn le_trans() -> Theorem {
                                             "S",
                                             steps(
                                                 vec![simp(Side::Lhs)], // le(S ka, S kc) -> le(ka, kc)
-                                                rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0), demote(1)], refl()),
+                                                rewrite_with_inst(
+                                                    hyp(0),
+                                                    Dir::Lr,
+                                                    Side::Lhs,
+                                                    vec![("b", var("$1"))], // pin the pivot to the kb field var
+                                                    vec![demote(0), demote(1)],
+                                                    refl(),
+                                                ),
                                             ),
                                         ),
                                     ],
@@ -994,7 +1000,7 @@ fn proves_order_toolkit() {
     // double/triple induction (the keystone pattern). Search can't reach these.
     let m = module();
     let th = Theory::default();
-    for thm in [le_succ_r(), nle_imp_neq(), nle_imp_nle_succ()] {
+    for thm in [le_succ_r(), nle_imp_neq(), nle_imp_nle_succ(), le_trans()] {
         assert_eq!(check_theorem(&m, &th, &thm), Ok(()), "{}", thm.name);
     }
 }

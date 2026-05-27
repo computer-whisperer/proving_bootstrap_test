@@ -69,8 +69,17 @@ pub enum Step {
     /// keeping stuck calls in `f(args)` form. The usual workhorse.
     Simp { side: Side },
     /// Replace equals by equals using a hypothesis or lemma. `all` rewrites
-    /// every occurrence in one pass; otherwise only the first.
-    Rewrite { using: EqRef, dir: Dir, side: Side, all: bool },
+    /// every occurrence in one pass; otherwise only the first. `with`
+    /// pre-instantiates named ∀-variables of the cited equation before matching
+    /// (∀-elimination) — needed for "pivot" variables that the match can't infer.
+    Rewrite {
+        using: EqRef,
+        dir: Dir,
+        side: Side,
+        all: bool,
+        #[serde(default)]
+        with: Vec<(String, Expr)>,
+    },
 }
 
 /// A proof tree.
@@ -91,8 +100,17 @@ pub enum Proof {
     /// Rewrite with a *conditional* equation, discharging each of its premises
     /// with a sub-proof (in order). The premises are instantiated by the match
     /// against the goal, then each is proven in the current context. Branches,
-    /// so it carries a continuation `rest`. Acts on a single side.
-    RewriteWith { using: EqRef, dir: Dir, side: Side, premises: Vec<Proof>, rest: Box<Proof> },
+    /// so it carries a continuation `rest`. Acts on a single side. `with`
+    /// pre-instantiates named ∀-variables before matching (see [`Step::Rewrite`]).
+    RewriteWith {
+        using: EqRef,
+        dir: Dir,
+        side: Side,
+        #[serde(default)]
+        with: Vec<(String, Expr)>,
+        premises: Vec<Proof>,
+        rest: Box<Proof>,
+    },
     /// Ex falso: close *any* goal from a contradictory assumption. The cited
     /// equation is `simp`-ed on both sides; if they are distinct constructors the
     /// context is inconsistent, so the goal holds vacuously.
