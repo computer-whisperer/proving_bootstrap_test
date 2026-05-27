@@ -215,22 +215,68 @@ is unchanged. A found proof is serde-serializable → doubles as a cache entry.
       IH in `le_lt_succ` and ex-falso in `le_z_eq`) in <1s.
 - [x] Finds the three **swap framing** lemmas (conditional, via premises).
 - [x] Finds the per-position spec's **base case** (`induct(j)`, `Z`).
-- [ ] **Does NOT** find the spec's inductive (`S`) case (3M nodes, no hit):
-      unfold-loop → case the guard → 5-way `p`-position split → mirror arithmetic
-      is too deep/broad for blind DFS. This is the genuine hard core; it needs
-      human-provided structure (search then discharges the shallow leaves).
+- [x] Pinpointed its limit: it does **NOT** find the spec's inductive (`S`) case,
+      nor any lemma needing conditional-IH application (`RewriteWith`) — it has no
+      move that generates one. The S-case (unfold-loop → case the guard → 5-way
+      `p`-position split → mirror arithmetic) is the genuine hard core; it needs
+      human-provided structure, with search discharging the shallow leaves. This
+      division of labor is exactly the kernel/search thesis in miniature.
 
-**Where the universal-n reverse stands.** Automation cleared the *volume* (every
-small lemma + the base case auto-proved). What remains is the spec's inductive
-step (the 5-case mirror-arithmetic argument) + the `arr_from = rev` connection —
-still substantial hand proof, with search filling leaves. Concretely complete:
-in-place reverse executes; `= rev` proven for arbitrary memory at fixed sizes
-(n=1..5); swap framing; base case. The inductive step is the open piece.
+### M3 — COMPLETE ✅ (2026-05-27): universal-`n` in-place reverse = `rev`
+
+The full theorem is proven end-to-end through the trusted kernel, for **arbitrary
+memory and arbitrary length**:
+
+```text
+forall m n,  arr_from(rev_loop(m, 0, n−1), 0, n)  =  rev(arr_from(m, 0, n))
+```
+
+Two layers, both machine-checked (`tests/common/`, see `M3-WALKTHROUGH.md`):
+
+- **Per-position invariant** (the conceptual core): `read(rev_loop(m,i,j), p) =
+  expected(m,i,j,p)` — induct on `j`; Z by search; the S/True branch is the 5-region
+  mirror argument (p<i, p=i, interior, p=j, p>j) composed via the swap framing
+  lemmas; the S/False branch is the fixed point. `common/spec.rs`
+- **The list lift** (`arr_from = rev`): specialize the invariant to a full reversal
+  (`read_rev_full`), push it through `arr_from` to a reflected-read list
+  (`arr_from_rev_eq_refl` → `read_refl_arr`), and meet `rev(arr_from(...))` at the
+  shared `arr_rev`. `common/reverse.rs`
+
+**The one kernel change it required — ∀-instantiation (sound).** `Rewrite`/
+`RewriteWith` gained an optional `with: Vec<(String, Expr)>` that pre-substitutes
+named ∀-variables before matching (∀-elimination). It is load-bearing wherever a
+lemma has a **spectator** variable — one that appears only in its premises, not
+its conclusion — so matching the conclusion can't infer it. The motivating case is
+transitivity (`le_trans`: the middle term `b`); also used to make a `var = var`
+equation usable by fully grounding it. Trust story intact: instantiating a ∀ is
+elimination, not a new axiom.
+
+**Findings worth keeping** (the "how program structures become provable" lessons):
+- *Framing is free.* `simp` unfolds `read(swap(m,i,j), p)` straight into nested
+  `nat_eq`-guarded `ite`s, so no separation logic / explicit swap-permission lemmas
+  are needed — the association-list memory pays for itself here.
+- *The rewrite engine can't synthesize `var = var` facts.* A lemma whose conclusion
+  is a bare variable equality (e.g. `nat_eq(a,b)=T ⊢ a=b`) is unusable as a rewrite
+  (a bare var matches everything). Structural endpoint facts must be stated with a
+  compound conclusion, or reached via `read`/`nat_eq` congruence + ∀-instantiation.
+- *`simp` over-reduces; peel with targeted single-step rewrites.* It unfolds a
+  recursive call all the way down, which loses a foldable tail or a `S`-layer the
+  next rewrite needs to match. The fix is one-step "defining unfold as a rewrite"
+  lemmas (`arr_from_cons`, `add_succ_l`, `le_succ_both`, `sub_succ_r`).
+- ~40 lemmas total: the unconditional leaves discharged by the **search**
+  (automation doing the volume, as intended); the ~30 conditional ones hand-proved
+  by a uniform double-induction pattern (induct the var that turns a stuck premise
+  into a refutable constructor clash for `Absurd`).
 
 ### Later / decide-after
-- [ ] Finish the spec inductive step (hybrid: hand structure + search leaves).
-- [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library).
-- [ ] Conditional-lemma support in the search (RewriteWith with premise search).
+- [ ] Make the heavy end-to-end proofs always-on (they are `#[ignore]`d for speed
+      because they rebuild a search-constructed `Theory` each run, ~45s). Fix:
+      cache the searched leaf proofs (serialize the found `Proof`s) so the theory
+      assembles without re-searching.
+- [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library) — the
+      remaining honest gap toward a narrow wasm interpreter.
+- [ ] Conditional-lemma support in the search (`RewriteWith` with premise search),
+      to close the capability gap pinpointed above.
 - [ ] Property-based counterexample search over executable tests.
 
 ## Crate Layout (decided)
@@ -239,12 +285,16 @@ Single crate, modules — least ceremony for a throwaway. The reducer lives in
 `obj_lang` and is imported by `proof`, so the trust boundary ("kernel uses the
 same reduction as the interpreter") is a module boundary.
 
+As built (the `bin/check.rs` and `examples/` entries below were sketched but never
+needed — the demos live as integration tests, built via the Rust helpers):
+
 ```text
 src/
   obj_lang/   AST, built-in types, structural-recursion check, reducer (semantics)
-  proof/      goal + proof AST, the trusted checker (kernel)        [M1]
-  bin/check.rs  load JSON object + proof files, run check, report yes/no  [M1]
-examples/     the reverse demo (built via helpers, round-tripped through JSON)
+  proof/      goal + proof AST, trusted checker (kernel) + untrusted search
+tests/
+  m0..m2_*.rs           object language, kernel, north-star (fast = rev)
+  m3.rs + common/*.rs   the M3 reverse demo, themed (see M3-WALKTHROUGH.md)
 ```
 
 ## Authoring (decided)
@@ -294,3 +344,17 @@ only if hand-building becomes the bottleneck.
   clippy clean. The remaining gap to a *universal-n* reverse is the unbounded
   loop invariant: pure arithmetic volume (~dozen lemmas + multi-case induction),
   no new conceptual blockers — i.e. automation-layer work, not kernel work.
+- 2026-05-26: **Automation layer (first cut).** Untrusted bounded-DFS proof search
+  over the kernel's own steps; rediscovers all unconditional lemmas + the spec base
+  case. Pinpointed its limit: no conditional-IH (`RewriteWith`) generation.
+- 2026-05-27: **M3 complete — universal-`n` in-place reverse = `rev`.** The
+  per-position loop invariant (5-region mirror argument) and the `arr_from = rev`
+  list lift, machine-checked for arbitrary memory and arbitrary length. Added one
+  sound kernel primitive (∀-instantiation, `with`) for spectator variables /
+  transitivity. ~40 lemmas (search for the unconditional leaves, hand for the ~30
+  conditionals). The pilot's "smallest honest form of the real dragon" — mutation,
+  framing, a loop invariant, index arithmetic — is done.
+- 2026-05-27: **Organization pass.** Split the 3233-line `tests/m3_memory.rs` into
+  themed modules (`tests/common/{model,framing,arith,spec,reverse}.rs` + a thin
+  `tests/m3.rs`), dropped 6 authoring-scaffolding tests, wrote `M3-WALKTHROUGH.md`.
+  27 passed + 5 ignored (the heavy end-to-end proofs), clippy clean.

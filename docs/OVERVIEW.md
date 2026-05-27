@@ -138,8 +138,11 @@ Logical structure (`and`/`or`/`not`/`implies`) lives **inside the object
 language** as ordinary computable `Bool` functions. The *meta* logic therefore
 needs only:
 
-- **equality** between object-language terms (`=`), and
-- **universally-quantified equations** (the goal's quantified variables),
+- **equality** between object-language terms (`=`),
+- **universally-quantified equations** (the goal's quantified variables), and
+- **conditional premises** — `premises ⊢ lhs = rhs` (added in M3, when framing a
+  mutable memory forced "this holds *when* `a ≠ b`"; premises enter the sequent as
+  usable hypotheses and `induct` carries them into the induction hypothesis).
 
 proven by a small fixed kit of inference steps (as realized in `proof/`):
 
@@ -148,15 +151,27 @@ proven by a small fixed kit of inference steps (as realized in `proof/`):
   The workhorse.
 - `unfold` / `reduce` — one δ-layer / ι-only, for the rare cases `simp` is too
   coarse or too eager.
-- `rewrite` by a known equation (an induction hypothesis or a proven lemma),
-  via first-order matching + capture-avoiding replacement.
+- `rewrite` by a known equation (an induction hypothesis, a proven lemma, or one
+  of the goal's own premises), via first-order matching + capture-avoiding
+  replacement. Carries an optional `with` to instantiate ∀-variables before
+  matching (∀-elimination — needed for lemmas with a "spectator" variable, like
+  the pivot in transitivity).
 - `induct` on a variable: the kernel generates the base/step subgoals from the
   type's constructors and supplies the induction hypothesis as a rewritable
   equation.
+- `case_on(expr, ty)` — split on a compound `Bool`/inductive expression (no
+  hypothesis), each branch assuming `expr = C(…)`. (The original `case` sketch was
+  dropped; `case_on` is its compound-scrutinee replacement, added for memory proofs.)
+- `rewrite_with` — rewrite by a *conditional* lemma, discharging each instantiated
+  premise with a sub-proof. A plain `rewrite` rejects conditional lemmas, so a
+  precondition can never be silently skipped.
+- `absurd` — ex-falso: a cited ground assumption that `simp`s to a constructor
+  clash (e.g. `lt(Z,Z) = True`) closes any goal. Lets contradictory boundary
+  premises discharge a case.
 
-(`case`, a split without a hypothesis, was in the original sketch but dropped as
-unneeded and derivable.) This kit proves `forall n, add(n, Z) = n`, `forall xs,
-append(xs, []) = xs`, and the north-star equivalence below.
+This kit proves `forall n, add(n, Z) = n`, `forall xs, append(xs, []) = xs`, the
+north-star equivalence (`fast = rev`), and the full M3 result — an in-place array
+reverse over a mutable memory equal to functional `rev` (see `M3-WALKTHROUGH.md`).
 
 ## Design Decisions (pilot)
 
