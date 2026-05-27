@@ -422,3 +422,61 @@ fn wasm_reverse_executes() {
     let got = eval(&m, &final_list).expect("wasm reverse evaluates");
     assert_eq!(got, list(vec![nat(4), nat(3), nat(2), nat(1)]), "wasm reverse should produce [4,3,2,1]");
 }
+
+/// The list read back from the wasm reverse of an `n`-element buffer in symbolic
+/// memory `m`, after `fuel` steps: `arr_from(cfg_mem(run(init_cfg(m,n), fuel)), 0, n)`.
+fn wasm_result_list(n: u64, fuel: u64) -> Expr {
+    call(
+        "arr_from",
+        vec![call("cfg_mem", vec![call("run", vec![call("init_cfg", vec![var("m"), nat(n)]), nat(fuel)])]), z(), nat(n)],
+    )
+}
+
+/// wasm-reverse ⊑ rev_loop, for a concrete length, over *symbolic* memory. With
+/// `n` concrete, the VM's control flow (the `i≥j` tests on concrete locals)
+/// unfolds completely; only the memory values stay symbolic. So both sides reduce
+/// under `simp` to the same tower of `read`/`write` over `m` — the proof is pure
+/// computation, no simulation invariant yet. This is the new refinement link.
+fn wasm_refines_rev_loop_fixed(n: u64, fuel: u64) -> Theorem {
+    theorem(
+        "wasm_refines_rev_loop_fixed",
+        forall_eq(
+            vec![param("m", "Mem")],
+            wasm_result_list(n, fuel),
+            call("arr_from", vec![call("rev_loop", vec![var("m"), z(), nat(n - 1)]), z(), nat(n)]),
+        ),
+        steps(vec![simp(Side::Both)], refl()),
+    )
+}
+
+/// wasm-reverse = functional `rev`, end to end, for a concrete length over
+/// symbolic memory — the M3 capstone reached from actual wasm bytecode.
+fn wasm_reverse_eq_rev_fixed(n: u64, fuel: u64) -> Theorem {
+    theorem(
+        "wasm_reverse_eq_rev_fixed",
+        forall_eq(
+            vec![param("m", "Mem")],
+            wasm_result_list(n, fuel),
+            call("rev", vec![call("arr_from", vec![var("m"), z(), nat(n)])]),
+        ),
+        steps(vec![simp(Side::Both)], refl()),
+    )
+}
+
+#[test]
+fn wasm_refines_rev_loop_for_fixed_sizes() {
+    let m = wasm_module();
+    // fuel: ~13 steps per swap iteration plus block/loop entry and exit; 80 is
+    // comfortably past the halt point for n ≤ 4 (extra fuel is a no-op fixpoint).
+    for n in 1..=5 {
+        assert_eq!(check_theorem(&m, &Theory::default(), &wasm_refines_rev_loop_fixed(n, 80)), Ok(()), "n = {n}");
+    }
+}
+
+#[test]
+fn wasm_reverse_equals_rev_for_fixed_sizes() {
+    let m = wasm_module();
+    for n in 1..=5 {
+        assert_eq!(check_theorem(&m, &Theory::default(), &wasm_reverse_eq_rev_fixed(n, 80)), Ok(()), "n = {n}");
+    }
+}
