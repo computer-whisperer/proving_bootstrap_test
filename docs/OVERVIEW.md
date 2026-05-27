@@ -170,8 +170,12 @@ proven by a small fixed kit of inference steps (as realized in `proof/`):
   premises discharge a case.
 
 This kit proves `forall n, add(n, Z) = n`, `forall xs, append(xs, []) = xs`, the
-north-star equivalence (`fast = rev`), and the full M3 result — an in-place array
-reverse over a mutable memory equal to functional `rev` (see `M3-WALKTHROUGH.md`).
+north-star equivalence (`fast = rev`), the full M3 result — an in-place array
+reverse over a mutable memory equal to functional `rev` (see `M3-WALKTHROUGH.md`)
+— and M4: a hand-written **wasm** reverse, run on a structured-wasm interpreter
+written in the object language, proven equal to `rev` for arbitrary input as a
+composed refinement chain `wasm ⊑ rev_loop ⊑ rev`. The only engine change M4
+needed was a *performance* fix (memoizing `simp`), not a new inference rule.
 
 ## Design Decisions (pilot)
 

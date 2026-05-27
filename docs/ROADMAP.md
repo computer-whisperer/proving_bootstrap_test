@@ -268,7 +268,7 @@ elimination, not a new axiom.
   by a uniform double-induction pattern (induct the var that turns a stuck premise
   into a refutable constructor clash for `Absurd`).
 
-### M4 — actual wasm intermediary (in progress, 2026-05-27)
+### M4 — actual wasm intermediary  ✅ COMPLETE (2026-05-27)
 
 The thesis made literal: lower the algorithm to a real machine and prove the
 lowering, demonstrating that refinement **chains** — `wasm ⊑ rev_loop ⊑ rev`,
@@ -297,16 +297,38 @@ symbolic, so both sides reduce under `simp` to the same `read(m,k)` leaves — p
 computation, the M3 `proves_reverse_for_fixed_sizes` pattern reached from real
 bytecode. No new foundational gap surfaced for the concrete case.
 
-**Open — universal `n`:** the simulation proof. A relation between VM state
-(stack, locals, PC/control stack, memory) and the abstract `rev_loop` state,
-preserved across one source-iteration's worth of VM micro-steps, with fuel a
-closed `f(n)`. This is the analogue of M3's per-position invariant one level down,
-and is where we expect a real new foundational want (as conditional equations and
-∀-instantiation were in M3). QoL likely needed first: a goal-stepping inspector
-and a controlled single-`step` tactic (M3 showed `simp` over-reduces).
+**Universal `n` — DONE ✅ (2026-05-27).** The simulation proof went through, and
+the foundation held: **no new kernel feature was needed** (unlike M3). What it
+took, in order:
+- A QoL **VM stepper** (`show_cfg`/`vm_trace`, untrusted) that revealed the
+  invariant: the loop-top control stack has a fixed shape, one iteration is
+  exactly 23 micro-steps, exit is 5.
+- The **loop-step lemmas** (`loop_step_continue`/`loop_step_exit`): from a loop
+  top, 23 steps = one swap iteration when `i<j` (one-to-one with a `rev_loop`
+  unfold), 5 steps to halt when `i≥j`. Proved by `simp` to the stuck guard,
+  rewrite the guard via the premise, `simp` on.
+- A **`simp` engine fix** — the one real finding. `simp` was *exponential in time*
+  churning `run` past a stuck guard (it re-simplified already-normal arguments).
+  Fixed by **memoizing `simp`** (pure speed-up; semantics preserved). This is the
+  M4 analogue of M3's wall — but a *reduction-performance* cliff, not a missing
+  inference rule.
+- `vm_fuel(i,j)`: a **closed-form exact step count** (the logic has no
+  existentials, so "halts in *some* fuel" is unsayable — we give the exact count,
+  which doubles as a cost bound).
+- `sim`: `cfg_mem(run(loop_top(i,j,tmp,mem), vm_fuel(i,j))) = rev_loop(mem,i,j)`,
+  by induction on `j` — the simulation invariant, one level down from M3's
+  per-position invariant. The guard correspondence (`le(S jp,i)` vs `lt(i,S jp)`)
+  reuses the M3 order lemmas.
+- **Capstone** `wasm_reverse_correct`: `enter_loop` (2 steps to the loop top) →
+  `sim` → M3's `reverse_eq_rev`, giving `wasm ⊑ rev_loop ⊑ rev` end to end.
+
+So: **M4 is complete.** The thesis is demonstrated literally — a hand-written wasm
+program, run on an interpreter, proven equal to its functional spec for arbitrary
+input, as a *composed, machine-checked refinement chain*.
 
 ### Later / decide-after
-- [ ] Universal-`n` wasm simulation proof (the open M4 piece above).
+- [ ] Machine ints (i32, modular) as a further refinement link below the `Nat` VM —
+      the remaining honest gap toward a faithful wasm.
 - [ ] Make the heavy end-to-end proofs always-on (they are `#[ignore]`d for speed
       because they rebuild a search-constructed `Theory` each run, ~45s). Fix:
       cache the searched leaf proofs (serialize the found `Proof`s) so the theory
@@ -412,3 +434,11 @@ only if hand-building becomes the bottleneck.
   per layer). Fixed by **memoizing `simp`** (pure speed-up; semantics preserved —
   all 52 default + 8 heavy proofs unchanged). 8s→0.14s on the probe; the loop-step
   lemmas then prove without the earlier peel-to-guard workaround.
+- 2026-05-27: **M4 COMPLETE — wasm reverse = `rev` for universal `n`.** Added a
+  closed-form fuel `vm_fuel`, the simulation `sim` (`run(loop_top) ≡ rev_loop` by
+  induction on `j`, reusing the M3 order lemmas for the guard correspondence),
+  `enter_loop`, and the capstone `wasm_reverse_correct` chaining
+  `wasm ⊑ rev_loop ⊑ rev`. No new kernel feature required. The thesis is
+  demonstrated end to end: hand-written bytecode, an interpreter, and a
+  machine-checked composed refinement to the functional spec. 34 passed + 10
+  ignored, clippy clean.
