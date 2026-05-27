@@ -38,8 +38,15 @@ pub fn find_proof(module: &Module, theory: &Theory, claim: &ForallEq, limits: Li
         lhs: claim.lhs.clone(),
         rhs: claim.rhs.clone(),
     };
+    find_from_sequent(module, theory, &seq, limits)
+}
+
+/// Search from an arbitrary goal. Lets a human supply the high-level structure
+/// (the inductions / case splits) and have search discharge the leaves — the
+/// usual division of labor when blind search on the whole theorem explodes.
+pub fn find_from_sequent(module: &Module, theory: &Theory, seq: &Sequent, limits: Limits) -> Option<Proof> {
     let mut budget = limits.nodes;
-    search(module, theory, &seq, limits.depth, &mut budget)
+    search(module, theory, seq, limits.depth, &mut budget)
 }
 
 fn search(module: &Module, theory: &Theory, seq: &Sequent, depth: usize, budget: &mut usize) -> Option<Proof> {
@@ -130,7 +137,46 @@ fn candidate_steps(seq: &Sequent, theory: &Theory) -> Vec<Step> {
     for name in theory.unconditional_lemma_names() {
         push_rewrites(EqRef::Lemma(name), &mut steps);
     }
+    // Unfolding a called function (then `simp`) exposes guards that are
+    // otherwise buried in an unevaluated body — needed for recursive functions
+    // like `rev_loop` whose match is gated on a symbolic condition.
+    for name in fn_names(seq) {
+        steps.push(Step::Unfold { func: name, side: Side::Both });
+    }
     steps
+}
+
+/// Distinct top-level function names called in the goal.
+fn fn_names(seq: &Sequent) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_fn_names(&seq.lhs, &mut out);
+    collect_fn_names(&seq.rhs, &mut out);
+    out
+}
+
+fn collect_fn_names(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Var { .. } => {}
+        Expr::Ctor { args, .. } => {
+            for a in args {
+                collect_fn_names(a, out);
+            }
+        }
+        Expr::Call { name, args } => {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+            for a in args {
+                collect_fn_names(a, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_fn_names(scrutinee, out);
+            for arm in arms {
+                collect_fn_names(&arm.body, out);
+            }
+        }
+    }
 }
 
 /// A ground (no vars, no premises) assumption that `simp`s to a constructor

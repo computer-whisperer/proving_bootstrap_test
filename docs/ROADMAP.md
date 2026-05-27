@@ -206,12 +206,32 @@ That volume is exactly the job of the untrusted automation/LLM layer (kernel
 re-checks each step), which is the strongest argument for building that layer
 next rather than hand-grinding the arithmetic.
 
+### Automation layer ✅ first cut (2026-05-26): `src/proof/search.rs`
+Built an **untrusted** bounded-DFS proof search over the kernel's own steps
+(`simp`, `rewrite` with hyps/premises/lemmas, `unfold`, `induct`, `case_on`,
+`absurd`). It only *proposes* a `Proof`; `check_theorem` re-validates, so trust
+is unchanged. A found proof is serde-serializable → doubles as a cache entry.
+- [x] Rediscovers kernel-valid proofs for **all 9 arithmetic lemmas** (incl. the
+      IH in `le_lt_succ` and ex-falso in `le_z_eq`) in <1s.
+- [x] Finds the three **swap framing** lemmas (conditional, via premises).
+- [x] Finds the per-position spec's **base case** (`induct(j)`, `Z`).
+- [ ] **Does NOT** find the spec's inductive (`S`) case (3M nodes, no hit):
+      unfold-loop → case the guard → 5-way `p`-position split → mirror arithmetic
+      is too deep/broad for blind DFS. This is the genuine hard core; it needs
+      human-provided structure (search then discharges the shallow leaves).
+
+**Where the universal-n reverse stands.** Automation cleared the *volume* (every
+small lemma + the base case auto-proved). What remains is the spec's inductive
+step (the 5-case mirror-arithmetic argument) + the `arr_from = rev` connection —
+still substantial hand proof, with search filling leaves. Concretely complete:
+in-place reverse executes; `= rev` proven for arbitrary memory at fixed sizes
+(n=1..5); swap framing; base case. The inductive step is the open piece.
+
 ### Later / decide-after
+- [ ] Finish the spec inductive step (hybrid: hand structure + search leaves).
 - [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library).
-- [ ] An instruction-set VM layer (decode/dispatch) for higher ISA fidelity.
+- [ ] Conditional-lemma support in the search (RewriteWith with premise search).
 - [ ] Property-based counterexample search over executable tests.
-- [ ] Pluggable untrusted proof search behind the kernel (the LLM slot); a
-      `simplify` step (simp + lemma set) is the first automation to add there.
 
 ## Crate Layout (decided)
 

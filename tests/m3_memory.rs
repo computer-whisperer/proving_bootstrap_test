@@ -769,6 +769,59 @@ fn search_rediscovers_arithmetic_proofs() {
     }
 }
 
+/// The per-position loop invariant (the centerpiece). Claim only; proof TBD
+/// (hand or search): read(rev_loop(m,i,j), p) = expected(m,i,j,p).
+fn spec_claim() -> ForallEq {
+    forall_eq(
+        vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat"), param("p", "Nat")],
+        call("read", vec![call("rev_loop", vec![var("m"), var("i"), var("j")]), var("p")]),
+        call("expected", vec![var("m"), var("i"), var("j"), var("p")]),
+    )
+}
+
+#[test]
+fn search_finds_swap_framing() {
+    // The swap framing lemmas are conditional; their proofs use premises +
+    // nat_eq_refl + simp. Search should find them.
+    let m = module();
+    let theory = check_theory(&m, &[read_write(), nat_eq_refl()]).unwrap();
+    for thm in [swap_at_j(), swap_at_i(), swap_elsewhere()] {
+        let found = find_proof(&m, &theory, &thm.claim, Limits::default());
+        assert!(found.is_some(), "search failed for {}", thm.name);
+        let searched = Theorem { name: thm.name.clone(), claim: thm.claim.clone(), proof: found.unwrap() };
+        assert_eq!(check_theorem(&m, &theory, &searched), Ok(()), "invalid for {}", thm.name);
+    }
+}
+
+#[test]
+#[ignore = "exploratory: hybrid — induct on j by hand, search each case"]
+fn search_attempts_spec() {
+    use proving_bootstrap::proof::check::{do_induct, Sequent};
+    use proving_bootstrap::proof::search::find_from_sequent;
+
+    let m = module();
+    let arith = [
+        and_true_r(),
+        and_false_r(),
+        le_refl(),
+        lt_irrefl(),
+        le_succ_same(),
+        lt_z(),
+        le_lt_succ(),
+        add_z_r(),
+        nat_eq_refl(),
+    ];
+    let theory = check_theory(&m, &arith).unwrap();
+    let claim = spec_claim();
+    let seq0 = Sequent { vars: claim.vars, hyps: vec![], premises: vec![], lhs: claim.lhs, rhs: claim.rhs };
+    let subs = do_induct(&m, &seq0, "j").unwrap();
+    let limits = Limits { depth: 12, nodes: 3_000_000 };
+    for (ctor, sub) in &subs {
+        let found = find_from_sequent(&m, &theory, sub, limits);
+        eprintln!("induct(j) case {ctor}: {}", if found.is_some() { "FOUND" } else { "not found" });
+    }
+}
+
 #[test]
 fn module_is_admitted() {
     assert_eq!(check_module(&module()), Ok(()));
