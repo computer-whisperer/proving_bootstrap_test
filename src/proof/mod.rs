@@ -13,5 +13,6 @@
 pub mod ast;
 pub mod build;
 pub mod check;
+pub mod search;
 
 pub use ast::*;

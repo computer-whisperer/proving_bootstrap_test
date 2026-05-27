@@ -85,6 +85,10 @@ impl Theory {
     pub fn get(&self, name: &str) -> Option<&ForallEq> {
         self.lemmas.iter().rev().find(|(n, _)| n == name).map(|(_, eq)| eq)
     }
+    /// Names of lemmas with no premises (usable via a plain `Rewrite`).
+    pub fn unconditional_lemma_names(&self) -> Vec<String> {
+        self.lemmas.iter().filter(|(_, eq)| eq.premises.is_empty()).map(|(n, _)| n.clone()).collect()
+    }
     fn push(&mut self, name: String, eq: ForallEq) {
         self.lemmas.push((name, eq));
     }
@@ -239,7 +243,7 @@ pub fn run_steps(module: &Module, theory: &Theory, seq: &Sequent, steps: &[Step]
 
 // --- steps
 
-fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) -> Result<Sequent, ProofError> {
+pub fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) -> Result<Sequent, ProofError> {
     let mut next = seq.clone();
     match step {
         Step::Unfold { func, side } => {
@@ -330,7 +334,7 @@ fn subst_eq(e: &Equation, map: &HashMap<String, Expr>) -> Equation {
 // hypothesis re-quantifies the goal's *other* variables. The goal's premises
 // ride along: substituted in each subgoal, and carried (conditional) into the IH.
 
-fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, Sequent)>, ProofError> {
+pub fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, Sequent)>, ProofError> {
     let pos = seq
         .vars
         .iter()
@@ -424,7 +428,7 @@ fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, S
 // sound. Unlike induction there is no hypothesis about subterms, and the goal is
 // not substituted — the branch's equation lets the proof rewrite the scrutinee.
 
-fn do_case_on(module: &Module, seq: &Sequent, scrutinee: &Expr, ty: &str) -> Result<Vec<(String, Sequent)>, ProofError> {
+pub fn do_case_on(module: &Module, seq: &Sequent, scrutinee: &Expr, ty: &str) -> Result<Vec<(String, Sequent)>, ProofError> {
     let tydef = module.type_def(ty).ok_or_else(|| ProofError::UnknownType(ty.to_string()))?;
 
     let mut used: HashSet<String> = seq.vars.iter().map(|p| p.name.clone()).collect();

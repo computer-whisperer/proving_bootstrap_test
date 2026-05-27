@@ -24,6 +24,7 @@ use proving_bootstrap::obj_lang::check::check_module;
 use proving_bootstrap::proof::ast::*;
 use proving_bootstrap::proof::build::*;
 use proving_bootstrap::proof::check::{check_theorem, check_theory, ProofError, Theory};
+use proving_bootstrap::proof::search::{find_proof, Limits};
 
 /// Memory + arithmetic model. Addresses and words are `Nat` for now (machine
 /// ints are a deliberate later step — see ROADMAP M3).
@@ -739,6 +740,33 @@ fn proves_basic_arithmetic() {
         le_z_eq(),
     ];
     assert!(check_theory(&m, &lemmas).is_ok());
+}
+
+#[test]
+fn search_rediscovers_arithmetic_proofs() {
+    // The automation layer: for each arithmetic lemma, throw away the hand
+    // proof, search for one, and check that the FOUND proof is kernel-valid.
+    let m = module();
+    let lemmas = [
+        and_true_r(),
+        and_false_r(),
+        le_refl(),
+        lt_irrefl(),
+        le_succ_same(),
+        lt_z(),
+        le_lt_succ(),
+        add_z_r(),
+        le_z_eq(),
+    ];
+    let mut proven: Vec<Theorem> = Vec::new();
+    for thm in lemmas {
+        let theory = check_theory(&m, &proven).unwrap();
+        let found = find_proof(&m, &theory, &thm.claim, Limits::default());
+        assert!(found.is_some(), "search failed to find a proof for {}", thm.name);
+        let searched = Theorem { name: thm.name.clone(), claim: thm.claim.clone(), proof: found.unwrap() };
+        assert_eq!(check_theorem(&m, &theory, &searched), Ok(()), "found proof invalid for {}", thm.name);
+        proven.push(searched);
+    }
 }
 
 #[test]
