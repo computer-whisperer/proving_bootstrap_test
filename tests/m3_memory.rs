@@ -824,6 +824,181 @@ pub fn lt_imp_neq_sym() -> Theorem {
     )
 }
 
+/// The recurring premise sub-proof for double-induction conditional lemmas:
+/// given `premise[i]` of the form `f(S ka, S kb) = V`, prove the peeled goal
+/// `f(ka, kb) = V`. Rewrites the goal's `V` back to the premise LHS, then `simp`
+/// peels the `S/S`, leaving `f(ka,kb)=f(ka,kb)`.
+fn demote(i: usize) -> Proof {
+    steps(vec![rewrite(premise(i), Dir::Rl, Side::Rhs), simp(Side::Rhs)], refl())
+}
+
+/// forall a b, [le(a, b) = True] ⊢ le(a, S(b)) = True
+pub fn le_succ_r() -> Theorem {
+    theorem(
+        "le_succ_r",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), tru())],
+            call("le", vec![var("a"), s(var("b"))]),
+            tru(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())), // le(Z, S b) = True
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))), // le(S _, Z) = True is false
+                            case(
+                                "S",
+                                steps(
+                                    vec![simp(Side::Lhs)], // le(S ka, S(S kb)) -> le(ka, S kb)
+                                    rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl()),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b, [le(a, b) = False] ⊢ nat_eq(a, b) = False  (a > b ⟹ a ≠ b)
+pub fn nle_imp_neq() -> Theorem {
+    theorem(
+        "nle_imp_neq",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), fls())],
+            call("nat_eq", vec![var("a"), var("b")]),
+            fls(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", absurd(premise(0))), // le(Z, b) = False is contradictory
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())), // nat_eq(S _, Z) = False
+                            case(
+                                "S",
+                                steps(
+                                    vec![simp(Side::Lhs)],
+                                    rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl()),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b, [le(a, b) = False] ⊢ le(S(a), b) = False  (a > b ⟹ a+1 > b)
+pub fn nle_imp_nle_succ() -> Theorem {
+    theorem(
+        "nle_imp_nle_succ",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), fls())],
+            call("le", vec![s(var("a")), var("b")]),
+            fls(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", absurd(premise(0))),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())), // le(S(S _), Z) = False
+                            case(
+                                "S",
+                                steps(
+                                    vec![simp(Side::Lhs)], // le(S(S ka), S kb) -> le(S ka, kb)
+                                    rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl()),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b c, [le(a, b) = True, le(b, c) = True] ⊢ le(a, c) = True (transitivity)
+///
+/// NOTE: this does NOT currently check. The middle term `b` appears only in the
+/// premises, not the conclusion `le(a, c)`, so when `RewriteWith` matches the
+/// conclusion it cannot determine `b` — the IH's premise obligation comes out as
+/// `le(a, b)` with `b` dangling. The rewrite-only kernel has no way to instantiate
+/// a lemma's "pivot" variable. Kept here to document the wall; the reverse proof
+/// needs transitivity, so this is the next kernel decision (lemma specialization).
+pub fn le_trans() -> Theorem {
+    theorem(
+        "le_trans",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat"), param("c", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), tru()), eqn(call("le", vec![var("b"), var("c")]), tru())],
+            call("le", vec![var("a"), var("c")]),
+            tru(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())), // le(Z, c) = True
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))), // le(S a, Z) = True is false
+                            case(
+                                "S",
+                                induct(
+                                    "c",
+                                    vec![
+                                        case("Z", absurd(premise(1))), // le(S b, Z) = True is false
+                                        case(
+                                            "S",
+                                            steps(
+                                                vec![simp(Side::Lhs)], // le(S ka, S kc) -> le(ka, kc)
+                                                rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0), demote(1)], refl()),
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+#[test]
+fn proves_order_toolkit() {
+    // The conditional order lemmas the reverse assembly leans on, hand-proved by
+    // double/triple induction (the keystone pattern). Search can't reach these.
+    let m = module();
+    let th = Theory::default();
+    for thm in [le_succ_r(), nle_imp_neq(), nle_imp_nle_succ()] {
+        assert_eq!(check_theorem(&m, &th, &thm), Ok(()), "{}", thm.name);
+    }
+}
+
 #[test]
 fn proves_lt_imp_neq() {
     // The keystone conditional arithmetic lemma (and its symmetric form), proven
@@ -999,8 +1174,33 @@ fn explore_spec_scase() {
             let guard = call("lt", vec![var("i"), s(var(&jp))]);
             let branches = do_case_on(&m, sub, &guard, "Bool").unwrap();
             for (bctor, bsub) in &branches {
-                eprintln!("\n----- case lt(i,S {jp})={bctor} -----\n{bsub}");
-                if let Ok(s2) = run_steps(&m, &theory, bsub, &[simp(Side::Both)]) {
+                eprintln!("\n----- case lt(i,S {jp})={bctor} -----");
+                if bctor == "True" {
+                    // Preamble: expose the guard, resolve it, apply the IH, align mirrors.
+                    let th = searched_arith_theory(&m);
+                    let pre = [
+                        ("unfold rev_loop", unfold("rev_loop", Side::Lhs)),
+                        ("simp Lhs (fire match S)", simp(Side::Lhs)),
+                        ("rewrite guard True", rewrite(hyp(1), Dir::Lr, Side::Lhs)),
+                        ("simp Lhs (fire match True)", simp(Side::Lhs)),
+                        ("rewrite IH", rewrite(hyp(0), Dir::Lr, Side::Lhs)),
+                        ("simp Both", simp(Side::Both)),
+                        ("add_succ_r Rhs", rewrite(lemma("add_succ_r"), Dir::Lr, Side::Rhs)),
+                    ];
+                    let mut cur = bsub.clone();
+                    for (label, step) in pre {
+                        match run_steps(&m, &th, &cur, std::slice::from_ref(&step)) {
+                            Ok(s2) => {
+                                eprintln!("  [{label}] ->\n{s2}");
+                                cur = s2;
+                            }
+                            Err(e) => {
+                                eprintln!("  [{label}] ERROR {e:?}");
+                                break;
+                            }
+                        }
+                    }
+                } else if let Ok(s2) = run_steps(&m, &theory, bsub, &[simp(Side::Both)]) {
                     eprintln!("  after simp(Both):\n{s2}");
                 }
             }
