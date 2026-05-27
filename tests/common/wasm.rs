@@ -386,6 +386,29 @@ pub fn wasm_module() -> Module {
         "Config",
         match_(var("fuel"), vec![arm("Z", &[], var("cfg")), arm("S", &["k"], call("run", vec![call("step", vec![var("cfg")]), var("k")]))]),
     ));
+    // vm_fuel(i, j): exactly enough fuel to run the loop from (i, j) to a halt.
+    // 5 steps to exit (guard true / j = 0), else 23 steps for one iteration plus
+    // the fuel for the rest. The successor-tower arms (S^5, S^23(..)) match the
+    // loop-step lemmas' fuel shape exactly. Structural on j.
+    m.fns.push(fndef(
+        "vm_fuel",
+        vec![param("i", "Nat"), param("j", "Nat")],
+        "Nat",
+        match_(
+            var("j"),
+            vec![
+                arm("Z", &[], nat(5)),
+                arm(
+                    "S",
+                    &["jp"],
+                    call(
+                        "ite",
+                        vec![call("le", vec![s(var("jp")), var("i")]), nat(5), succn(23, call("vm_fuel", vec![s(var("i")), var("jp")]))],
+                    ),
+                ),
+            ],
+        ),
+    ));
     // The reverse program: block { loop { <body> } }.
     m.fns.push(fndef("rev_prog", vec![], "Code", code(vec![iblock(code(vec![iloop(rev_loop_body())]))])));
     // init_cfg(m, n): empty stack, locals [0, n-1, 0], memory m, one frame
@@ -526,6 +549,215 @@ fn proves_loop_step_continue() {
 fn proves_loop_step_exit() {
     let m = wasm_module();
     assert_eq!(check_theorem(&m, &Theory::default(), &loop_step_exit()), Ok(()));
+}
+
+// --- the simulation: run(loop_top) ≡ rev_loop, by induction on j --------------
+
+/// Discharge a premise subgoal that is exactly the case hypothesis `le(S$0,i)=…`.
+fn by_hyp1() -> Proof {
+    steps(vec![rewrite(hyp(1), Dir::Lr, Side::Lhs)], refl())
+}
+
+/// The simulation theorem: running the VM loop from a loop top, with `vm_fuel`,
+/// leaves the same memory as the functional `rev_loop`.
+///
+/// ```text
+/// forall mem i j tmp,
+///   cfg_mem(run(loop_top(i, j, tmp, mem), vm_fuel(i, j))) = rev_loop(mem, i, j)
+/// ```
+fn sim_claim() -> ForallEq {
+    forall_eq(
+        vec![param("mem", "Mem"), param("i", "Nat"), param("j", "Nat"), param("tmp", "Nat")],
+        call("cfg_mem", vec![call("run", vec![loop_top(var("i"), var("j"), var("tmp"), var("mem")), call("vm_fuel", vec![var("i"), var("j")])])]),
+        call("rev_loop", vec![var("mem"), var("i"), var("j")]),
+    )
+}
+
+fn sim() -> Theorem {
+    // S-case, guard true (i ≥ j): the loop exits, rev_loop returns mem.
+    let exit_case = steps(
+        vec![
+            unfold("vm_fuel", Side::Lhs),
+            reduce(Side::Lhs),
+            rewrite(hyp(1), Dir::Lr, Side::Lhs), // le(S$0,i) -> True
+            unfold("ite", Side::Lhs),
+            reduce(Side::Lhs), // fuel -> nat(5)
+        ],
+        rewrite_with(
+            lemma("loop_step_exit"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![by_hyp1()],
+            steps(
+                vec![
+                    simp(Side::Lhs),                              // run(halted, Z) -> mem
+                    unfold("rev_loop", Side::Rhs),
+                    reduce(Side::Rhs),                           // -> match lt(i,S$0){..}
+                    rewrite(lemma("le_lt_succ"), Dir::Lr, Side::Rhs), // lt(i,S$0) -> le(i,$0)
+                ],
+                rewrite_with(
+                    lemma("le_succ_nle"),
+                    Dir::Lr,
+                    Side::Rhs,
+                    vec![by_hyp1()], // [le(S$0,i)=True] => le(i,$0)=False
+                    steps(vec![reduce(Side::Rhs)], refl()), // match False -> mem
+                ),
+            ),
+        ),
+    );
+
+    // S-case, guard false (i < j): one iteration, then the IH.
+    let continue_case = steps(
+        vec![
+            unfold("vm_fuel", Side::Lhs),
+            reduce(Side::Lhs),
+            rewrite(hyp(1), Dir::Lr, Side::Lhs), // le(S$0,i) -> False
+            unfold("ite", Side::Lhs),
+            reduce(Side::Lhs), // fuel -> S^23(vm_fuel(S i, $0))
+        ],
+        rewrite_with(
+            lemma("loop_step_continue"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![by_hyp1()],
+            steps(
+                vec![
+                    rewrite(lemma("add_succ_r"), Dir::Lr, Side::Lhs), // add(i,S Z) -> S(add(i,Z))
+                    rewrite(lemma("add_z_r"), Dir::Lr, Side::Lhs),    // add(i,Z) -> i  (so i' = S i)
+                    unfold("rev_loop", Side::Rhs),
+                    reduce(Side::Rhs),                                // -> match lt(i,S$0){..}
+                    rewrite(lemma("le_lt_succ"), Dir::Lr, Side::Rhs), // lt(i,S$0) -> le(i,$0)
+                ],
+                rewrite_with(
+                    lemma("nle_succ_imp_le"),
+                    Dir::Lr,
+                    Side::Rhs,
+                    vec![by_hyp1()], // [le(S$0,i)=False] => le(i,$0)=True
+                    steps(
+                        vec![
+                            reduce(Side::Rhs),                       // match True -> rev_loop(swap.., S i, $0)
+                            simp(Side::Both),                        // reduce sub/swap; keep run/rev_loop/vm_fuel folded
+                            rewrite(hyp(0), Dir::Lr, Side::Lhs),     // apply IH
+                        ],
+                        refl(),
+                    ),
+                ),
+            ),
+        ),
+    );
+
+    theorem(
+        "sim",
+        sim_claim(),
+        induct(
+            "j",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case("S", case_on(call("le", vec![s(var("$0")), var("i")]), "Bool", vec![case("True", exit_case), case("False", continue_case)])),
+            ],
+        ),
+    )
+}
+
+/// The toolkit (arith order lemmas) plus the two loop-step lemmas — everything
+/// `sim` cites. The toolkit is the slow searched build, so this is for the
+/// `#[ignore]`d simulation test.
+fn sim_theory() -> Theory {
+    let mut thms = reverse_toolkit_theorems();
+    thms.push(loop_step_continue());
+    thms.push(loop_step_exit());
+    check_theory(&wasm_module(), &thms).expect("sim theory checks")
+}
+
+#[test]
+#[ignore = "the wasm simulation: run(loop_top) ≡ rev_loop for universal j (slow: builds the searched toolkit)"]
+fn proves_sim() {
+    let m = wasm_module();
+    assert_eq!(check_theorem(&m, &sim_theory(), &sim()), Ok(()));
+}
+
+/// `enter_loop`: from `init_cfg`, two steps (enter block, enter loop) reach the
+/// loop top with locals `[0, n-1, 0]`. Pure computation (no guard), via `simp`
+/// with a variable fuel tail.
+fn enter_loop() -> Theorem {
+    theorem(
+        "enter_loop",
+        forall_eq(
+            vec![param("m", "Mem"), param("n", "Nat"), param("f", "Nat")],
+            call("run", vec![call("init_cfg", vec![var("m"), var("n")]), succn(2, var("f"))]),
+            call("run", vec![loop_top(z(), call("pred", vec![var("n")]), z(), var("m")), var("f")]),
+        ),
+        steps(vec![simp(Side::Both)], refl()),
+    )
+}
+
+/// THE M4 capstone: the hand-written wasm reverse, run on the VM, equals the
+/// functional `rev`, for arbitrary memory and arbitrary length — actual bytecode
+/// through an interpreter, chained `wasm ⊑ rev_loop ⊑ rev`.
+///
+/// ```text
+/// forall m n,
+///   arr_from(cfg_mem(run(init_cfg(m, n), 2 + vm_fuel(0, n-1))), 0, n)
+///     = rev(arr_from(m, 0, n))
+/// ```
+///
+/// `enter_loop` reaches the loop top, `sim` runs the loop to `rev_loop`'s result,
+/// and M3's `reverse_eq_rev` turns that into `rev`.
+fn wasm_reverse_correct() -> Theorem {
+    theorem(
+        "wasm_reverse_correct",
+        forall_eq(
+            vec![param("m", "Mem"), param("n", "Nat")],
+            call(
+                "arr_from",
+                vec![
+                    call(
+                        "cfg_mem",
+                        vec![call(
+                            "run",
+                            vec![call("init_cfg", vec![var("m"), var("n")]), succn(2, call("vm_fuel", vec![z(), call("pred", vec![var("n")])]))],
+                        )],
+                    ),
+                    z(),
+                    var("n"),
+                ],
+            ),
+            call("rev", vec![call("arr_from", vec![var("m"), z(), var("n")])]),
+        ),
+        steps(
+            vec![
+                rewrite(lemma("enter_loop"), Dir::Lr, Side::Lhs),      // init_cfg -> loop_top (2 steps)
+                rewrite(lemma("sim"), Dir::Lr, Side::Lhs),             // loop -> rev_loop(m, 0, n-1)
+                rewrite(lemma("reverse_eq_rev"), Dir::Lr, Side::Lhs),  // rev_loop -> rev (M3 capstone)
+            ],
+            refl(),
+        ),
+    )
+}
+
+/// Everything the capstone cites: the full M3 theory (for `reverse_eq_rev`), the
+/// loop-step lemmas, `enter_loop`, and `sim`.
+fn capstone_theory() -> Theory {
+    let mut thms = full_theory_theorems();
+    thms.push(reverse_eq_rev());
+    thms.push(loop_step_continue());
+    thms.push(loop_step_exit());
+    thms.push(enter_loop());
+    thms.push(sim());
+    check_theory(&wasm_module(), &thms).expect("capstone theory checks")
+}
+
+#[test]
+fn proves_enter_loop() {
+    let m = wasm_module();
+    assert_eq!(check_theorem(&m, &Theory::default(), &enter_loop()), Ok(()));
+}
+
+#[test]
+#[ignore = "THE M4 capstone: wasm reverse = rev for universal n (slow: builds the full M3 theory + sim)"]
+fn proves_wasm_reverse_correct() {
+    let m = wasm_module();
+    assert_eq!(check_theorem(&m, &capstone_theory(), &wasm_reverse_correct()), Ok(()));
 }
 
 fn expr_size(e: &Expr) -> usize {

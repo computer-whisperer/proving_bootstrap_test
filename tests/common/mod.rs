@@ -206,6 +206,13 @@ pub fn full_theory() -> Theory {
 }
 
 pub fn build_full_theory() -> Theory {
+    check_theory(&module(), &full_theory_theorems()).unwrap()
+}
+
+/// The full M3 theory as an ordered, dependency-checked theorem list (toolkit +
+/// searched list lemmas + `rev_loop_spec` + the `arr_from`/`rev` lemmas). Exposed
+/// so downstream work (the M4 wasm capstone) can extend it.
+pub fn full_theory_theorems() -> Vec<Theorem> {
     let m = module();
     let mut proven = reverse_toolkit_theorems();
     let ab = || vec![param("a", "Nat"), param("b", "Nat")];
@@ -235,5 +242,5 @@ pub fn build_full_theory() -> Theory {
     for thm in [sub_succ_r(), arr_from_cons(), arr_from_snoc(), rev_append(), rev_arr_from(), read_refl_arr_eq(), read_rev_full(), arr_from_rev_eq_refl()] {
         proven.push(thm);
     }
-    check_theory(&m, &proven).unwrap()
+    proven
 }
