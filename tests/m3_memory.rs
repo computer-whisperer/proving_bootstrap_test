@@ -724,6 +724,115 @@ pub fn le_z_eq() -> Theorem {
     )
 }
 
+/// forall a b, [lt(a, b) = True] ⊢ nat_eq(a, b) = False.
+/// The keystone conditional lemma: strict-less-than implies disequal. Search
+/// cannot find this (it needs to apply its own conditional IH via `RewriteWith`).
+/// Hand structure: induct on `a`; in each case **induct on `b`** (not `case_on`)
+/// so the premise is substituted, exposing the boundary `lt(_, Z)`/`lt(Z, _)` as
+/// a constructor clash for `absurd`; the S/S case applies the conditional IH.
+pub fn lt_imp_neq() -> Theorem {
+    // Subproof obligation for the IH premise: given premise[0] = lt(S ka, S kb) =
+    // True, prove lt(ka, kb) = True. Rewrite the goal's True back to the premise
+    // LHS, then `simp` peels the S/S — leaving lt(ka,kb)=lt(ka,kb).
+    let lt_pred = || steps(vec![rewrite(premise(0), Dir::Rl, Side::Rhs), simp(Side::Rhs)], refl());
+    theorem(
+        "lt_imp_neq",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("lt", vec![var("a"), var("b")]), tru())],
+            call("nat_eq", vec![var("a"), var("b")]),
+            fls(),
+        ),
+        induct(
+            "a",
+            vec![
+                case(
+                    "Z",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),               // lt(Z,Z)=True is false
+                            case("S", steps(vec![simp(Side::Lhs)], refl())), // nat_eq(Z,S _)=False
+                        ],
+                    ),
+                ),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),               // lt(S _,Z)=True is false
+                            case(
+                                "S",
+                                // nat_eq(S ka,S kb) -> nat_eq(ka,kb); discharge via IH (hyp 0).
+                                steps(
+                                    vec![simp(Side::Lhs)],
+                                    rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![lt_pred()], refl()),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b, [lt(a, b) = True] ⊢ nat_eq(b, a) = False — the swapped-argument
+/// form (same structure; the loop framing needs both orientations).
+pub fn lt_imp_neq_sym() -> Theorem {
+    let lt_pred = || steps(vec![rewrite(premise(0), Dir::Rl, Side::Rhs), simp(Side::Rhs)], refl());
+    theorem(
+        "lt_imp_neq_sym",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("lt", vec![var("a"), var("b")]), tru())],
+            call("nat_eq", vec![var("b"), var("a")]),
+            fls(),
+        ),
+        induct(
+            "a",
+            vec![
+                case(
+                    "Z",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case("S", steps(vec![simp(Side::Lhs)], refl())), // nat_eq(S _,Z)=False
+                        ],
+                    ),
+                ),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(
+                                    vec![simp(Side::Lhs)],
+                                    rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![lt_pred()], refl()),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+#[test]
+fn proves_lt_imp_neq() {
+    // The keystone conditional arithmetic lemma (and its symmetric form), proven
+    // by hand — the piece the search provably cannot reach.
+    let m = module();
+    assert_eq!(check_theorem(&m, &Theory::default(), &lt_imp_neq()), Ok(()), "lt_imp_neq");
+    assert_eq!(check_theorem(&m, &Theory::default(), &lt_imp_neq_sym()), Ok(()), "lt_imp_neq_sym");
+}
+
 #[test]
 fn proves_basic_arithmetic() {
     let m = module();
@@ -868,6 +977,34 @@ fn search_finds_swap_framing() {
         assert!(found.is_some(), "search failed for {}", thm.name);
         let searched = Theorem { name: thm.name.clone(), claim: thm.claim.clone(), proof: found.unwrap() };
         assert_eq!(check_theorem(&m, &theory, &searched), Ok(()), "invalid for {}", thm.name);
+    }
+}
+
+#[test]
+#[ignore = "exploration harness: prints S-case goal shapes while authoring the spec proof"]
+fn explore_spec_scase() {
+    use proving_bootstrap::proof::check::{do_case_on, do_induct, run_steps, Sequent};
+
+    let m = module();
+    let theory = Theory::default();
+    let claim = spec_claim();
+    let seq0 = Sequent { vars: claim.vars, hyps: vec![], premises: vec![], lhs: claim.lhs, rhs: claim.rhs };
+
+    let subs = do_induct(&m, &seq0, "j").unwrap();
+    for (ctor, sub) in &subs {
+        eprintln!("\n===== induct(j) case {ctor} =====\n{sub}");
+        if ctor == "S" {
+            // The loop guard governs the S case. jp is the fresh field var; find it.
+            let jp = sub.vars[0].name.clone();
+            let guard = call("lt", vec![var("i"), s(var(&jp))]);
+            let branches = do_case_on(&m, sub, &guard, "Bool").unwrap();
+            for (bctor, bsub) in &branches {
+                eprintln!("\n----- case lt(i,S {jp})={bctor} -----\n{bsub}");
+                if let Ok(s2) = run_steps(&m, &theory, bsub, &[simp(Side::Both)]) {
+                    eprintln!("  after simp(Both):\n{s2}");
+                }
+            }
+        }
     }
 }
 
