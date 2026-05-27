@@ -100,6 +100,74 @@ pub fn module() -> Module {
                 ],
             ),
         ),
+        // le(a, b) : a <= b
+        fndef(
+            "le",
+            vec![param("a", "Nat"), param("b", "Nat")],
+            "Bool",
+            match_(
+                var("a"),
+                vec![
+                    arm("Z", &[], tru()),
+                    arm(
+                        "S",
+                        &["ka"],
+                        match_(
+                            var("b"),
+                            vec![arm("Z", &[], fls()), arm("S", &["kb"], call("le", vec![var("ka"), var("kb")]))],
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        // sub(a, b) = a - b (saturating), recursing on b
+        fndef(
+            "sub",
+            vec![param("a", "Nat"), param("b", "Nat")],
+            "Nat",
+            match_(
+                var("b"),
+                vec![
+                    arm("Z", &[], var("a")),
+                    arm(
+                        "S",
+                        &["kb"],
+                        match_(
+                            var("a"),
+                            vec![arm("Z", &[], z()), arm("S", &["ka"], call("sub", vec![var("ka"), var("kb")]))],
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        // in_range(i, j, p) = i <= p && p <= j
+        fndef(
+            "in_range",
+            vec![param("i", "Nat"), param("j", "Nat"), param("p", "Nat")],
+            "Bool",
+            call("and", vec![call("le", vec![var("i"), var("p")]), call("le", vec![var("p"), var("j")])]),
+        ),
+        // mirror(i, j, p) = i + j - p  (the reflected index within [i, j])
+        fndef(
+            "mirror",
+            vec![param("i", "Nat"), param("j", "Nat"), param("p", "Nat")],
+            "Nat",
+            call("sub", vec![call("add", vec![var("i"), var("j")]), var("p")]),
+        ),
+        // expected(m, i, j, p): value at p after reversing [i, j] in place
+        fndef(
+            "expected",
+            vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat"), param("p", "Nat")],
+            "Nat",
+            call(
+                "ite",
+                vec![
+                    call("in_range", vec![var("i"), var("j"), var("p")]),
+                    call("read", vec![var("m"), call("mirror", vec![var("i"), var("j"), var("p")])]),
+                    call("read", vec![var("m"), var("p")]),
+                ],
+            ),
+        ),
         // read(m, b) = match m { MNil => Z, MCell(a, v, rest) => ite(nat_eq(a, b), v, read(rest, b)) }
         fndef(
             "read",
@@ -493,6 +561,148 @@ pub fn swap_elsewhere() -> Theorem {
             refl(),
         ),
     )
+}
+
+// --- arithmetic lemma library (toward the universal-n reverse) ---
+
+/// forall x, and(x, True) = x
+pub fn and_true_r() -> Theorem {
+    theorem(
+        "and_true_r",
+        forall_eq(vec![param("x", "Bool")], call("and", vec![var("x"), tru()]), var("x")),
+        case_on(
+            var("x"),
+            "Bool",
+            vec![
+                case("True", steps(vec![rewrite_all(hyp(0), Dir::Lr, Side::Both), simp(Side::Lhs)], refl())),
+                case("False", steps(vec![rewrite_all(hyp(0), Dir::Lr, Side::Both), simp(Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall x, and(x, False) = False
+pub fn and_false_r() -> Theorem {
+    theorem(
+        "and_false_r",
+        forall_eq(vec![param("x", "Bool")], call("and", vec![var("x"), fls()]), fls()),
+        case_on(
+            var("x"),
+            "Bool",
+            vec![
+                case("True", steps(vec![rewrite_all(hyp(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)], refl())),
+                case("False", steps(vec![rewrite_all(hyp(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a, le(a, a) = True
+pub fn le_refl() -> Theorem {
+    theorem(
+        "le_refl",
+        forall_eq(vec![param("a", "Nat")], call("le", vec![var("a"), var("a")]), tru()),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case("S", steps(vec![simp(Side::Lhs), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a, lt(a, a) = False
+pub fn lt_irrefl() -> Theorem {
+    theorem(
+        "lt_irrefl",
+        forall_eq(vec![param("a", "Nat")], call("lt", vec![var("a"), var("a")]), fls()),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case("S", steps(vec![simp(Side::Lhs), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a, le(a, S(a)) = True
+pub fn le_succ_same() -> Theorem {
+    theorem(
+        "le_succ_same",
+        forall_eq(vec![param("a", "Nat")], call("le", vec![var("a"), s(var("a"))]), tru()),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case("S", steps(vec![simp(Side::Lhs), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a, lt(a, Z) = False
+pub fn lt_z() -> Theorem {
+    theorem(
+        "lt_z",
+        forall_eq(vec![param("a", "Nat")], call("lt", vec![var("a"), z()]), fls()),
+        case_on(
+            var("a"),
+            "Nat",
+            vec![
+                case("Z", steps(vec![rewrite(hyp(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)], refl())),
+                case("S", steps(vec![rewrite(hyp(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a b, lt(a, S(b)) = le(a, b)   (a < b+1  ⟺  a ≤ b)
+pub fn le_lt_succ() -> Theorem {
+    theorem(
+        "le_lt_succ",
+        forall_eq(vec![param("a", "Nat"), param("b", "Nat")], call("lt", vec![var("a"), s(var("b"))]), call("le", vec![var("a"), var("b")])),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case(
+                    "S",
+                    case_on(
+                        var("b"),
+                        "Nat",
+                        vec![
+                            // b = Z: lt(k, Z) = False = le(S k, Z)
+                            case(
+                                "Z",
+                                steps(
+                                    vec![rewrite(hyp(1), Dir::Lr, Side::Both), simp(Side::Both), rewrite(lemma("lt_z"), Dir::Lr, Side::Lhs)],
+                                    refl(),
+                                ),
+                            ),
+                            // b = S(kb): reduces to the IH at kb
+                            case(
+                                "S",
+                                steps(
+                                    vec![rewrite(hyp(1), Dir::Lr, Side::Both), simp(Side::Both), rewrite(hyp(0), Dir::Lr, Side::Lhs)],
+                                    refl(),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+#[test]
+fn proves_basic_arithmetic() {
+    let m = module();
+    // dependency order so later lemmas can cite earlier ones
+    let lemmas = [and_true_r(), and_false_r(), le_refl(), lt_irrefl(), le_succ_same(), lt_z(), le_lt_succ()];
+    assert!(check_theory(&m, &lemmas).is_ok());
 }
 
 #[test]
