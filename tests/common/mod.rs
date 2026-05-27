@@ -17,6 +17,7 @@ pub mod framing;
 pub mod model;
 pub mod reverse;
 pub mod spec;
+pub mod wasm;
 
 pub use proving_bootstrap::obj_lang::ast::*;
 pub use proving_bootstrap::obj_lang::build::*;
@@ -32,6 +33,9 @@ pub use framing::*;
 pub use model::*;
 pub use reverse::*;
 pub use spec::*;
+// `wasm::*` is intentionally not re-exported yet — nothing cross-module consumes
+// the VM builders until the correctness proof lands. `pub mod wasm` above is
+// enough to compile and run its tests.
 
 // ===== theory assembly =====
 // The glue that turns the lemma builders above into checkable `Theory`s:
