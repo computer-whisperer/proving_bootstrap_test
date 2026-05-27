@@ -160,6 +160,30 @@ extension of the hypothesis machinery the kernel already has internally (the IH
 (`lt`-monotonicity, `lt ⟹ ≠`), the two-pointer reverse becomes tractable. It is
 a real kernel change, so it is a decision to make deliberately, not ram in.
 
+**Conditional equations — IMPLEMENTED ✅ (2026-05-26).** `tests/m3_memory.rs`
+- `ForallEq` gained `premises: Vec<Equation>`; `Sequent` gained `premises`
+  (tracked separately so `induct` can carry them into a *conditional* IH).
+- `EqRef::Premise(i)` cites the goal's own premises; the soundness guard makes a
+  plain `Rewrite` **reject** a conditional equation (so a conditional lemma can't
+  be used as if unconditional — tested: `plain_rewrite_rejects_conditional_lemma`).
+- New `RewriteWith` proof node: rewrite with a conditional equation, discharging
+  each instantiated premise with a sub-proof. Branches; checks premise count.
+- Validated: `read_write_frame` (different-address framing — the exact blocker),
+  the conditional-IH path (`append_nil_cond`), and using a conditional lemma
+  (`frame_use`). 29 tests, clippy clean.
+
+**New finding from attempting the arithmetic (2026-05-26).** Conditional
+equations unblock the framing lemmas, but pushing the supporting arithmetic
+(e.g. `lt(a,b)=True ⊢ nat_eq(a,b)=False`) surfaces a *further* gap: the boundary
+cases are **contradictory premises** (e.g. `lt(Z,Z)=True`), and exploiting them
+needs to *simplify/rewrite inside a hypothesis* and close a goal from a
+constructor-clash (`True = False`) — ex-falso. The kernel currently rewrites
+only the **goal**, not hypotheses. So the *full* two-pointer in-place reverse
+needs, beyond conditional equations: (a) hypothesis manipulation (`simp`/rewrite
+in a hyp) + ex-falso on constructor clash, and (b) an arithmetic lemma library
+(cleanest via an unconditional trichotomy lemma to sidestep ex-falso). Both are
+modest, well-scoped additions — the path is open, not blocked.
+
 ### Later / decide-after
 - [ ] Machine ints (i32 bitvector type + modular-arithmetic lemma library).
 - [ ] An instruction-set VM layer (decode/dispatch) for higher ISA fidelity.
@@ -216,7 +240,14 @@ only if hand-building becomes the bottleneck.
 - 2026-05-26: **M3 foundation done; general in-place reverse blocked on a
   precise wall.** Added QoL (`Display`/`run_steps`, `case_on`, `rewrite_all`)
   and an address-indexed memory. Proven: in-place reverse *executes*, McCarthy
-  framing, induction-over-memory, address-disequality arithmetic (24 tests,
-  clippy clean). Established by attempting it that the *general* in-place reverse
-  needs **conditional-premise equations** — a real but well-scoped kernel
-  extension. That is the decision point now.
+  framing, induction-over-memory, address-disequality arithmetic. Established by
+  attempting it that the *general* in-place reverse needs **conditional-premise
+  equations**.
+- 2026-05-26: **Conditional equations implemented + validated** (`ForallEq`
+  premises, `Sequent` premises, `EqRef::Premise`, `RewriteWith`, soundness
+  guard). Proves the different-address framing lemma and exercises the
+  conditional-IH path. 29 tests, clippy clean. Attempting the supporting
+  arithmetic surfaced the *next* needed piece: hypothesis manipulation + ex-falso
+  (kernel currently rewrites only the goal). The full two-pointer reverse is
+  unblocked but is a real proof-engineering push needing that + an arithmetic
+  library — decision point for whether to continue.

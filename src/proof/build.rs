@@ -6,7 +6,16 @@ use crate::obj_lang::ast::{Expr, Param};
 use super::ast::*;
 
 pub fn forall_eq(vars: Vec<Param>, lhs: Expr, rhs: Expr) -> ForallEq {
-    ForallEq { vars, lhs, rhs }
+    ForallEq { vars, premises: Vec::new(), lhs, rhs }
+}
+
+/// A conditional equation: `forall vars, premises ⊢ lhs = rhs`.
+pub fn forall_eq_cond(vars: Vec<Param>, premises: Vec<Equation>, lhs: Expr, rhs: Expr) -> ForallEq {
+    ForallEq { vars, premises, lhs, rhs }
+}
+
+pub fn eqn(lhs: Expr, rhs: Expr) -> Equation {
+    Equation { lhs, rhs }
 }
 
 pub fn theorem(name: &str, claim: ForallEq, proof: Proof) -> Theorem {
@@ -29,6 +38,12 @@ pub fn induct(var: &str, cases: Vec<Case>) -> Proof {
 
 pub fn case_on(scrutinee: Expr, ty: &str, cases: Vec<Case>) -> Proof {
     Proof::CaseOn { scrutinee, ty: ty.into(), cases }
+}
+
+/// Rewrite with a conditional equation; `premises` supplies one sub-proof per
+/// premise (in order), each proving the instantiated premise.
+pub fn rewrite_with(using: EqRef, dir: Dir, side: Side, premises: Vec<Proof>, rest: Proof) -> Proof {
+    Proof::RewriteWith { using, dir, side, premises, rest: Box::new(rest) }
 }
 
 pub fn case(ctor: &str, proof: Proof) -> Case {
@@ -59,6 +74,10 @@ pub fn rewrite_all(using: EqRef, dir: Dir, side: Side) -> Step {
 // Equation references
 pub fn hyp(i: usize) -> EqRef {
     EqRef::Hyp(i)
+}
+
+pub fn premise(i: usize) -> EqRef {
+    EqRef::Premise(i)
 }
 
 pub fn lemma(name: &str) -> EqRef {

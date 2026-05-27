@@ -4,11 +4,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::obj_lang::ast::{Expr, Param};
 
-/// A universally-quantified equation: `forall vars, lhs = rhs`. Used for claims,
-/// for proven lemmas, and for induction hypotheses.
+/// An equation `lhs = rhs` (a premise, or the conclusion of a [`ForallEq`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Equation {
+    pub lhs: Expr,
+    pub rhs: Expr,
+}
+
+/// A conditional, universally-quantified equation:
+/// `forall vars, premises ⊢ lhs = rhs`. Used for claims, proven lemmas, and
+/// induction hypotheses. With `premises` empty it is an ordinary equation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForallEq {
     pub vars: Vec<Param>,
+    #[serde(default)]
+    pub premises: Vec<Equation>,
     pub lhs: Expr,
     pub rhs: Expr,
 }
@@ -38,11 +48,12 @@ pub enum Dir {
     Rl,
 }
 
-/// Which equation a `Rewrite` uses: an in-scope hypothesis (e.g. an induction
-/// hypothesis, by index) or a previously-proven lemma (by name).
+/// Which equation a rewrite uses: an in-scope hypothesis (e.g. an induction
+/// hypothesis), one of the goal's own premises, or a previously-proven lemma.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EqRef {
     Hyp(usize),
+    Premise(usize),
     Lemma(String),
 }
 
@@ -77,6 +88,11 @@ pub enum Proof {
     /// hypothesis (no induction hypothesis). `ty` is named explicitly since
     /// there is no type checker. Used for Bool splits like `eq(a, b)`.
     CaseOn { scrutinee: Expr, ty: String, cases: Vec<Case> },
+    /// Rewrite with a *conditional* equation, discharging each of its premises
+    /// with a sub-proof (in order). The premises are instantiated by the match
+    /// against the goal, then each is proven in the current context. Branches,
+    /// so it carries a continuation `rest`. Acts on a single side.
+    RewriteWith { using: EqRef, dir: Dir, side: Side, premises: Vec<Proof>, rest: Box<Proof> },
 }
 
 /// One branch of an [`Proof::Induct`]: the proof for constructor `ctor`.

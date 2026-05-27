@@ -27,13 +27,24 @@ pub enum ProofError {
     UnfoldUnknownFn(String),
     /// An induction left a constructor with no matching `Case`.
     MissingCase { ctor: String },
+    /// `Premise(i)` out of range.
+    NoPremise(usize),
+    /// A plain `Rewrite` was used with a conditional equation; use `RewriteWith`.
+    RewriteNeedsPremises,
+    /// `RewriteWith` given the wrong number of premise sub-proofs.
+    PremiseCountMismatch { expected: usize, got: usize },
+    /// `RewriteWith` on `Side::Both` (a single side is required).
+    RewriteWithBothSides,
 }
 
-/// A proof obligation: prove `lhs = rhs` for all `vars`, with `hyps` available.
+/// A proof obligation: prove `premises ⊢ lhs = rhs` for all `vars`, with `hyps`
+/// available. `premises` are the goal's own assumptions (usable via
+/// `EqRef::Premise`) and are what `induct` carries into the induction hypothesis.
 #[derive(Clone, Debug)]
 pub struct Sequent {
     pub vars: Vec<Param>,
     pub hyps: Vec<ForallEq>,
+    pub premises: Vec<Equation>,
     pub lhs: Expr,
     pub rhs: Expr,
 }
@@ -42,10 +53,19 @@ impl std::fmt::Display for Sequent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let vars = self.vars.iter().map(|p| format!("{}:{}", p.name, p.ty)).collect::<Vec<_>>().join(", ");
         writeln!(f, "vars: {vars}")?;
+        for (i, p) in self.premises.iter().enumerate() {
+            writeln!(f, "  premise[{i}]: {} = {}", p.lhs, p.rhs)?;
+        }
         for (i, h) in self.hyps.iter().enumerate() {
             let hv = h.vars.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ");
             let q = if hv.is_empty() { String::new() } else { format!("forall {hv}, ") };
-            writeln!(f, "  hyp[{i}]: {q}{} = {}", h.lhs, h.rhs)?;
+            let prem = if h.premises.is_empty() {
+                String::new()
+            } else {
+                let ps = h.premises.iter().map(|e| format!("{} = {}", e.lhs, e.rhs)).collect::<Vec<_>>().join(", ");
+                format!("[{ps}] => ")
+            };
+            writeln!(f, "  hyp[{i}]: {q}{prem}{} = {}", h.lhs, h.rhs)?;
         }
         write!(f, "  goal: {} = {}", self.lhs, self.rhs)
     }
@@ -82,6 +102,7 @@ pub fn check_theorem(module: &Module, theory: &Theory, thm: &Theorem) -> Result<
     let seq = Sequent {
         vars: thm.claim.vars.clone(),
         hyps: Vec::new(),
+        premises: thm.claim.premises.clone(),
         lhs: thm.claim.lhs.clone(),
         rhs: thm.claim.rhs.clone(),
     };
@@ -109,7 +130,61 @@ fn check_sequent(module: &Module, theory: &Theory, seq: &Sequent, proof: &Proof)
             let subgoals = do_case_on(module, seq, scrutinee, ty)?;
             check_branches(module, theory, subgoals, cases)
         }
+        Proof::RewriteWith { using, dir, side, premises, rest } => {
+            let next = apply_rewrite_with(module, theory, seq, using, *dir, *side, premises)?;
+            check_sequent(module, theory, &next, rest)
+        }
     }
+}
+
+/// Rewrite with a conditional equation: match it against the chosen side, prove
+/// each instantiated premise with the supplied sub-proof, then rewrite.
+fn apply_rewrite_with(
+    module: &Module,
+    theory: &Theory,
+    seq: &Sequent,
+    using: &EqRef,
+    dir: Dir,
+    side: Side,
+    premise_proofs: &[Proof],
+) -> Result<Sequent, ProofError> {
+    let eq = resolve_eq(theory, seq, using)?;
+    if premise_proofs.len() != eq.premises.len() {
+        return Err(ProofError::PremiseCountMismatch { expected: eq.premises.len(), got: premise_proofs.len() });
+    }
+    let (pat, rep) = match dir {
+        Dir::Lr => (&eq.lhs, &eq.rhs),
+        Dir::Rl => (&eq.rhs, &eq.lhs),
+    };
+    let pat_vars: HashSet<String> = eq.vars.iter().map(|p| p.name.clone()).collect();
+
+    let target = match side {
+        Side::Lhs => &seq.lhs,
+        Side::Rhs => &seq.rhs,
+        Side::Both => return Err(ProofError::RewriteWithBothSides),
+    };
+    let (rewritten, binding) =
+        rewrite_first_capture(target, pat, rep, &pat_vars).ok_or(ProofError::RewriteNoMatch)?;
+
+    // Each premise, instantiated by the match, must be proven in this context.
+    for (prem, proof) in eq.premises.iter().zip(premise_proofs) {
+        let subgoal = Sequent {
+            vars: seq.vars.clone(),
+            hyps: seq.hyps.clone(),
+            premises: seq.premises.clone(),
+            lhs: subst(&prem.lhs, &binding),
+            rhs: subst(&prem.rhs, &binding),
+        };
+        check_sequent(module, theory, &subgoal, proof)?;
+    }
+
+    let mut next = seq.clone();
+    match side {
+        Side::Lhs => next.lhs = rewritten,
+        Side::Rhs => next.rhs = rewritten,
+        Side::Both => unreachable!(),
+    }
+    Ok(next)
 }
 
 fn check_branches(
@@ -157,6 +232,9 @@ fn apply_step(module: &Module, theory: &Theory, seq: &Sequent, step: &Step) -> R
         }
         Step::Rewrite { using, dir, side, all } => {
             let eq = resolve_eq(theory, seq, using)?;
+            if !eq.premises.is_empty() {
+                return Err(ProofError::RewriteNeedsPremises);
+            }
             let (pat, rep) = match dir {
                 Dir::Lr => (&eq.lhs, &eq.rhs),
                 Dir::Rl => (&eq.rhs, &eq.lhs),
@@ -207,8 +285,17 @@ fn apply_side(
 fn resolve_eq(theory: &Theory, seq: &Sequent, eqref: &EqRef) -> Result<ForallEq, ProofError> {
     match eqref {
         EqRef::Hyp(i) => seq.hyps.get(*i).cloned().ok_or(ProofError::NoHyp(*i)),
+        EqRef::Premise(i) => seq
+            .premises
+            .get(*i)
+            .map(|e| ForallEq { vars: Vec::new(), premises: Vec::new(), lhs: e.lhs.clone(), rhs: e.rhs.clone() })
+            .ok_or(ProofError::NoPremise(*i)),
         EqRef::Lemma(name) => theory.get(name).cloned().ok_or_else(|| ProofError::NoLemma(name.clone())),
     }
+}
+
+fn subst_eq(e: &Equation, map: &HashMap<String, Expr>) -> Equation {
+    Equation { lhs: subst(&e.lhs, map), rhs: subst(&e.rhs, map) }
 }
 
 // --- induction
@@ -216,7 +303,8 @@ fn resolve_eq(theory: &Theory, seq: &Sequent, eqref: &EqRef) -> Result<ForallEq,
 // Provenance of correctness: for an inductive type, proving the property for
 // every constructor (assuming it for the recursive children) proves it for all
 // values. The children are universal too, so field vars join the context; the
-// hypothesis re-quantifies the goal's *other* variables.
+// hypothesis re-quantifies the goal's *other* variables. The goal's premises
+// ride along: substituted in each subgoal, and carried (conditional) into the IH.
 
 fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, Sequent)>, ProofError> {
     let pos = seq
@@ -232,6 +320,10 @@ fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, S
     let mut used: HashSet<String> = seq.vars.iter().map(|p| p.name.clone()).collect();
     used.extend(free_vars(&seq.lhs));
     used.extend(free_vars(&seq.rhs));
+    for p in &seq.premises {
+        used.extend(free_vars(&p.lhs));
+        used.extend(free_vars(&p.rhs));
+    }
     for h in &seq.hyps {
         used.extend(free_vars(&h.lhs));
         used.extend(free_vars(&h.rhs));
@@ -260,18 +352,25 @@ fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, S
                 if h.vars.iter().any(|p| p.name == var) {
                     h.clone()
                 } else {
-                    ForallEq { vars: h.vars.clone(), lhs: subst(&h.lhs, &ctor_map), rhs: subst(&h.rhs, &ctor_map) }
+                    ForallEq {
+                        vars: h.vars.clone(),
+                        premises: h.premises.iter().map(|e| subst_eq(e, &ctor_map)).collect(),
+                        lhs: subst(&h.lhs, &ctor_map),
+                        rhs: subst(&h.rhs, &ctor_map),
+                    }
                 }
             })
             .collect();
 
-        // One induction hypothesis per recursive field.
+        // One induction hypothesis per recursive field — itself conditional if
+        // the goal had premises.
         for f in &fields {
             if f.ty == ty_name {
                 let ih_map: HashMap<String, Expr> =
                     HashMap::from([(var.to_string(), Expr::Var { name: f.name.clone() })]);
                 hyps.push(ForallEq {
                     vars: rest.clone(),
+                    premises: seq.premises.iter().map(|e| subst_eq(e, &ih_map)).collect(),
                     lhs: subst(&seq.lhs, &ih_map),
                     rhs: subst(&seq.rhs, &ih_map),
                 });
@@ -282,7 +381,13 @@ fn do_induct(module: &Module, seq: &Sequent, var: &str) -> Result<Vec<(String, S
         vars.extend(rest.clone());
         out.push((
             ctor.name.clone(),
-            Sequent { vars, hyps, lhs: subst(&seq.lhs, &ctor_map), rhs: subst(&seq.rhs, &ctor_map) },
+            Sequent {
+                vars,
+                hyps,
+                premises: seq.premises.iter().map(|e| subst_eq(e, &ctor_map)).collect(),
+                lhs: subst(&seq.lhs, &ctor_map),
+                rhs: subst(&seq.rhs, &ctor_map),
+            },
         ));
     }
     Ok(out)
@@ -323,8 +428,11 @@ fn do_case_on(module: &Module, seq: &Sequent, scrutinee: &Expr, ty: &str) -> Res
         vars.extend(fields);
         let mut hyps = seq.hyps.clone();
         // scrutinee = C(fresh…), usable as a left-to-right rewrite.
-        hyps.push(ForallEq { vars: Vec::new(), lhs: scrutinee.clone(), rhs: ctor_expr });
-        out.push((ctor.name.clone(), Sequent { vars, hyps, lhs: seq.lhs.clone(), rhs: seq.rhs.clone() }));
+        hyps.push(ForallEq { vars: Vec::new(), premises: Vec::new(), lhs: scrutinee.clone(), rhs: ctor_expr });
+        out.push((
+            ctor.name.clone(),
+            Sequent { vars, hyps, premises: seq.premises.clone(), lhs: seq.lhs.clone(), rhs: seq.rhs.clone() },
+        ));
     }
     Ok(out)
 }
@@ -334,6 +442,46 @@ fn do_case_on(module: &Module, seq: &Sequent, scrutinee: &Expr, ty: &str) -> Res
 // Patterns are applicative (Var / Ctor / Call); a pattern `Match` is required to
 // match structurally. The rewrite search does not descend into `match` arm
 // bodies, so no binder can capture the replacement.
+
+/// Like `rewrite_first`, but also returns the match binding (needed to
+/// instantiate a conditional equation's premises).
+fn rewrite_first_capture(
+    e: &Expr,
+    pat: &Expr,
+    rep: &Expr,
+    pat_vars: &HashSet<String>,
+) -> Option<(Expr, HashMap<String, Expr>)> {
+    let mut binding = HashMap::new();
+    if match_expr(pat, e, pat_vars, &mut binding) {
+        let out = subst(rep, &binding);
+        return Some((out, binding));
+    }
+    match e {
+        Expr::Var { .. } => None,
+        Expr::Ctor { name, args } => rewrite_capture_in_args(args, pat, rep, pat_vars)
+            .map(|(args, b)| (Expr::Ctor { name: name.clone(), args }, b)),
+        Expr::Call { name, args } => rewrite_capture_in_args(args, pat, rep, pat_vars)
+            .map(|(args, b)| (Expr::Call { name: name.clone(), args }, b)),
+        Expr::Match { scrutinee, arms } => rewrite_first_capture(scrutinee, pat, rep, pat_vars)
+            .map(|(s, b)| (Expr::Match { scrutinee: Box::new(s), arms: arms.clone() }, b)),
+    }
+}
+
+fn rewrite_capture_in_args(
+    args: &[Expr],
+    pat: &Expr,
+    rep: &Expr,
+    pat_vars: &HashSet<String>,
+) -> Option<(Vec<Expr>, HashMap<String, Expr>)> {
+    for (i, a) in args.iter().enumerate() {
+        if let Some((new_a, b)) = rewrite_first_capture(a, pat, rep, pat_vars) {
+            let mut out = args.to_vec();
+            out[i] = new_a;
+            return Some((out, b));
+        }
+    }
+    None
+}
 
 fn rewrite_first(e: &Expr, pat: &Expr, rep: &Expr, pat_vars: &HashSet<String>) -> Option<Expr> {
     let mut binding = HashMap::new();

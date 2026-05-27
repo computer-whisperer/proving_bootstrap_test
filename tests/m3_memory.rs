@@ -23,7 +23,7 @@ use proving_bootstrap::obj_lang::builtins::prelude;
 use proving_bootstrap::obj_lang::check::check_module;
 use proving_bootstrap::proof::ast::*;
 use proving_bootstrap::proof::build::*;
-use proving_bootstrap::proof::check::{check_theorem, check_theory, Theory};
+use proving_bootstrap::proof::check::{check_theorem, check_theory, ProofError, Theory};
 
 /// Memory + arithmetic model. Addresses and words are `Nat` for now (machine
 /// ints are a deliberate later step — see ROADMAP M3).
@@ -345,9 +345,139 @@ pub fn nat_neq_succ() -> Theorem {
     )
 }
 
+/// forall m a v b, [nat_eq(a, b) = False] ⊢ read(write(m, a, v), b) = read(m, b)
+/// Read-after-write at a *different* address — a genuinely conditional framing
+/// lemma. Proven using its own premise (via `EqRef::Premise`).
+pub fn read_write_frame() -> Theorem {
+    theorem(
+        "read_write_frame",
+        forall_eq_cond(
+            vec![param("m", "Mem"), param("a", "Nat"), param("v", "Nat"), param("b", "Nat")],
+            vec![eqn(call("nat_eq", vec![var("a"), var("b")]), fls())],
+            call("read", vec![call("write", vec![var("m"), var("a"), var("v")]), var("b")]),
+            call("read", vec![var("m"), var("b")]),
+        ),
+        steps(
+            vec![
+                simp(Side::Lhs),                          // -> ite(nat_eq(a,b), v, read(m,b))
+                rewrite(premise(0), Dir::Lr, Side::Lhs),  // premise: nat_eq(a,b) = False
+                simp(Side::Lhs),                          // ite(False, v, read(m,b)) -> read(m,b)
+            ],
+            refl(),
+        ),
+    )
+}
+
+/// forall xs, [Z = Z] ⊢ append(xs, Nil) = xs
+/// A trivially-conditioned version of `append_nil`, to exercise that `induct`
+/// produces a *conditional* induction hypothesis and that `RewriteWith`
+/// discharges it (here by reflexivity).
+pub fn append_nil_cond() -> Theorem {
+    theorem(
+        "append_nil_cond",
+        forall_eq_cond(
+            vec![param("xs", "List")],
+            vec![eqn(z(), z())],
+            call("append", vec![var("xs"), nil()]),
+            var("xs"),
+        ),
+        induct(
+            "xs",
+            vec![
+                case("Nil", steps(vec![simp(Side::Lhs)], refl())),
+                case(
+                    "Cons",
+                    // simp -> Cons(h, append(t, Nil)); then use the conditional IH,
+                    // discharging its [Z = Z] premise by refl.
+                    steps(
+                        vec![simp(Side::Lhs)],
+                        rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![refl()], refl()),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall m, read(write(write(m, 0, 7), 1, 9), 0) = 7
+/// USES `read_write_frame` (a conditional lemma) via `RewriteWith`, discharging
+/// `nat_eq(1, 0) = False` with a sub-proof, then `read_after_write_same`.
+pub fn frame_use() -> Theorem {
+    theorem(
+        "frame_use",
+        forall_eq(
+            vec![param("m", "Mem")],
+            call(
+                "read",
+                vec![
+                    call("write", vec![call("write", vec![var("m"), z(), nat(7)]), s(z()), nat(9)]),
+                    z(),
+                ],
+            ),
+            nat(7),
+        ),
+        rewrite_with(
+            lemma("read_write_frame"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![steps(vec![simp(Side::Lhs)], refl())], // prove nat_eq(S(Z), Z) = False
+            steps(vec![rewrite(lemma("read_after_write_same"), Dir::Lr, Side::Lhs)], refl()),
+        ),
+    )
+}
+
 #[test]
 fn module_is_admitted() {
     assert_eq!(check_module(&module()), Ok(()));
+}
+
+#[test]
+fn proves_conditional_framing_lemma() {
+    assert_eq!(check_theorem(&module(), &Theory::default(), &read_write_frame()), Ok(()));
+}
+
+#[test]
+fn inductive_conditional_lemma_with_conditional_ih() {
+    assert_eq!(check_theorem(&module(), &Theory::default(), &append_nil_cond()), Ok(()));
+}
+
+#[test]
+fn uses_conditional_lemma_via_rewrite_with() {
+    let theory = check_theory(&module(), &[read_write(), nat_eq_refl(), read_after_write_same(), read_write_frame()]).unwrap();
+    assert_eq!(check_theorem(&module(), &theory, &frame_use()), Ok(()));
+}
+
+#[test]
+fn plain_rewrite_rejects_conditional_lemma() {
+    // Trying to use the conditional read_write_frame as if unconditional (plain
+    // Rewrite) would prove the FALSE unconditional read(write(m,a,v),b)=read(m,b).
+    // The kernel must reject it.
+    let theory = check_theory(&module(), &[read_write_frame()]).unwrap();
+    let unsound = theorem(
+        "unsound",
+        forall_eq(
+            vec![param("m", "Mem"), param("a", "Nat"), param("v", "Nat"), param("b", "Nat")],
+            call("read", vec![call("write", vec![var("m"), var("a"), var("v")]), var("b")]),
+            call("read", vec![var("m"), var("b")]),
+        ),
+        steps(vec![rewrite(lemma("read_write_frame"), Dir::Lr, Side::Lhs)], refl()),
+    );
+    assert_eq!(check_theorem(&module(), &theory, &unsound), Err(ProofError::RewriteNeedsPremises));
+}
+
+#[test]
+fn rewrite_with_checks_premise_count() {
+    let theory = check_theory(&module(), &[read_write(), nat_eq_refl(), read_after_write_same(), read_write_frame()]).unwrap();
+    let bad = theorem(
+        "bad",
+        frame_use().claim,
+        // read_write_frame has 1 premise; supply 0.
+        rewrite_with(lemma("read_write_frame"), Dir::Lr, Side::Lhs, vec![], refl()),
+    );
+    assert_eq!(
+        check_theorem(&module(), &theory, &bad),
+        Err(ProofError::PremiseCountMismatch { expected: 1, got: 0 })
+    );
 }
 
 #[test]
