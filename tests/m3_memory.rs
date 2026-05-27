@@ -271,7 +271,7 @@ pub fn module() -> Module {
                         &["c"],
                         cons(
                             call("read", vec![var("m"), var("start")]),
-                            call("arr_from", vec![var("m"), call("add", vec![var("start"), s(z())]), var("c")]),
+                            call("arr_from", vec![var("m"), s(var("start")), var("c")]),
                         ),
                     ),
                 ],
@@ -299,6 +299,41 @@ pub fn module() -> Module {
                 vec![
                     arm("Nil", &[], nil()),
                     arm("Cons", &["h", "t"], call("append", vec![call("rev", vec![var("t")]), cons(var("h"), nil())])),
+                ],
+            ),
+        ),
+        // arr_rev(m, count) = [read(m, count-1), read(m, count-2), …, read(m, 0)]
+        // (the descending read list — what an in-place reverse produces).
+        fndef(
+            "arr_rev",
+            vec![param("m", "Mem"), param("count", "Nat")],
+            "List",
+            match_(
+                var("count"),
+                vec![
+                    arm("Z", &[], nil()),
+                    arm("S", &["c"], cons(call("read", vec![var("m"), var("c")]), call("arr_rev", vec![var("m"), var("c")]))),
+                ],
+            ),
+        ),
+        // read_refl_arr(m, hi, s, count) = [read(m, hi-s), read(m, hi-(s+1)), …]
+        // — reads at reflected addresses; recursion mirrors arr_from (increment s).
+        fndef(
+            "read_refl_arr",
+            vec![param("m", "Mem"), param("hi", "Nat"), param("s", "Nat"), param("count", "Nat")],
+            "List",
+            match_(
+                var("count"),
+                vec![
+                    arm("Z", &[], nil()),
+                    arm(
+                        "S",
+                        &["c"],
+                        cons(
+                            call("read", vec![var("m"), call("sub", vec![var("hi"), var("s")])]),
+                            call("read_refl_arr", vec![var("m"), var("hi"), s(var("s")), var("c")]),
+                        ),
+                    ),
                 ],
             ),
         ),
@@ -1624,6 +1659,42 @@ fn proves_arith_building_blocks() {
 }
 
 #[test]
+#[ignore = "probe: which list/arith lemmas for task #4 can the search find?"]
+fn probe_search_list() {
+    let m = module();
+    let xs = || vec![param("xs", "List"), param("ys", "List"), param("zs", "List")];
+    let candidates: Vec<(&str, ForallEq)> = vec![
+        ("le_add_r", forall_eq(vec![param("a", "Nat"), param("b", "Nat")], call("le", vec![var("a"), call("add", vec![var("a"), var("b")])]), tru())),
+        ("append_nil", forall_eq(vec![param("xs", "List")], call("append", vec![var("xs"), nil()]), var("xs"))),
+        (
+            "append_assoc",
+            forall_eq(
+                xs(),
+                call("append", vec![call("append", vec![var("xs"), var("ys")]), var("zs")]),
+                call("append", vec![var("xs"), call("append", vec![var("ys"), var("zs")])]),
+            ),
+        ),
+        (
+            "arr_from_snoc",
+            forall_eq(
+                vec![param("mm", "Mem"), param("s", "Nat"), param("c", "Nat")],
+                call("arr_from", vec![var("mm"), var("s"), s(var("c"))]),
+                call("append", vec![call("arr_from", vec![var("mm"), var("s"), var("c")]), cons(call("read", vec![var("mm"), call("add", vec![var("s"), var("c")])]), nil())]),
+            ),
+        ),
+    ];
+    let mut proven: Vec<Theorem> = Vec::new();
+    for (name, claim) in candidates {
+        let th = check_theory(&m, &proven).unwrap();
+        let found = find_proof(&m, &th, &claim, Limits { depth: 8, nodes: 1_500_000 });
+        eprintln!("{name}: {}", if found.is_some() { "FOUND" } else { "not found" });
+        if let Some(p) = found {
+            proven.push(Theorem { name: name.into(), claim, proof: p });
+        }
+    }
+}
+
+#[test]
 #[ignore = "probe: which unconditional sub/add arithmetic lemmas can the search find?"]
 fn probe_search_arith() {
     let m = module();
@@ -1775,6 +1846,13 @@ fn reverse_toolkit_theory() -> Theory {
 
 fn build_reverse_toolkit_theory() -> Theory {
     let m = module();
+    check_theory(&m, &reverse_toolkit_theorems()).unwrap()
+}
+
+/// The full toolkit as an ordered theorem list (searched unconditional lemmas,
+/// then hand-proved conditionals in dependency order).
+fn reverse_toolkit_theorems() -> Vec<Theorem> {
+    let m = module();
     let mut proven: Vec<Theorem> = Vec::new();
     for (name, claim) in arith_claims() {
         let th = check_theory(&m, &proven).unwrap();
@@ -1814,7 +1892,7 @@ fn build_reverse_toolkit_theory() -> Theory {
     ] {
         proven.push(thm);
     }
-    check_theory(&m, &proven).unwrap()
+    proven
 }
 
 #[test]
@@ -2605,6 +2683,398 @@ fn search_attempts_spec() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Task #4: connect the per-position invariant to arr_from = rev.
+// ---------------------------------------------------------------------------
+
+/// forall a b, sub(a, S(b)) = pred(sub(a, b))
+pub fn sub_succ_r() -> Theorem {
+    theorem(
+        "sub_succ_r",
+        forall_eq(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            call("sub", vec![var("a"), s(var("b"))]),
+            call("pred", vec![call("sub", vec![var("a"), var("b")])]),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", induct("b", vec![case("Z", steps(vec![simp(Side::Both)], refl())), case("S", steps(vec![simp(Side::Both)], refl()))])),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Both)], refl())),
+                            case("S", steps(vec![simp(Side::Both), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall m s c, arr_from(m, s, S c) = Cons(read(m, s), arr_from(m, S s, c))
+/// The defining unfold as a rewrite — peels exactly one element (unlike `simp`,
+/// which unfolds the count all the way down and loses the foldable tail).
+pub fn arr_from_cons() -> Theorem {
+    theorem(
+        "arr_from_cons",
+        forall_eq(
+            vec![param("m", "Mem"), param("s", "Nat"), param("c", "Nat")],
+            call("arr_from", vec![var("m"), var("s"), s(var("c"))]),
+            cons(call("read", vec![var("m"), var("s")]), call("arr_from", vec![var("m"), s(var("s")), var("c")])),
+        ),
+        steps(vec![simp(Side::Lhs)], refl()),
+    )
+}
+
+/// forall m s c, arr_from(m,s,S c) = append(arr_from(m,s,c), Cons(read(m,add(s,c)), Nil))
+pub fn arr_from_snoc() -> Theorem {
+    theorem(
+        "arr_from_snoc",
+        forall_eq(
+            vec![param("m", "Mem"), param("s", "Nat"), param("c", "Nat")],
+            call("arr_from", vec![var("m"), var("s"), s(var("c"))]),
+            call("append", vec![call("arr_from", vec![var("m"), var("s"), var("c")]), cons(call("read", vec![var("m"), call("add", vec![var("s"), var("c")])]), nil())]),
+        ),
+        induct(
+            "c",
+            vec![
+                case("Z", steps(vec![simp(Side::Both), rewrite(lemma("add_z_r"), Dir::Lr, Side::Rhs)], refl())),
+                case(
+                    "S",
+                    // Peel one element off each side (arr_from_cons), apply IH at s := S s,
+                    // then align add(S s, d) = add(s, S d) via add_succ_r.
+                    steps(
+                        vec![
+                            rewrite(lemma("arr_from_cons"), Dir::Lr, Side::Lhs),
+                            rewrite(lemma("arr_from_cons"), Dir::Lr, Side::Rhs),
+                            simp(Side::Rhs),
+                            rewrite(hyp(0), Dir::Lr, Side::Lhs),
+                            simp(Side::Lhs),
+                            rewrite(lemma("add_succ_r"), Dir::Lr, Side::Rhs),
+                        ],
+                        refl(),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall xs ys, rev(append(xs, ys)) = append(rev(ys), rev(xs))
+pub fn rev_append() -> Theorem {
+    theorem(
+        "rev_append",
+        forall_eq(
+            vec![param("xs", "List"), param("ys", "List")],
+            call("rev", vec![call("append", vec![var("xs"), var("ys")])]),
+            call("append", vec![call("rev", vec![var("ys")]), call("rev", vec![var("xs")])]),
+        ),
+        induct(
+            "xs",
+            vec![
+                case("Nil", steps(vec![simp(Side::Both), rewrite(lemma("append_nil"), Dir::Lr, Side::Rhs)], refl())),
+                case(
+                    "Cons",
+                    steps(vec![simp(Side::Both), rewrite(hyp(0), Dir::Lr, Side::Lhs), rewrite(lemma("append_assoc"), Dir::Lr, Side::Lhs)], refl()),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall m n, rev(arr_from(m, 0, n)) = arr_rev(m, n)
+pub fn rev_arr_from() -> Theorem {
+    theorem(
+        "rev_arr_from",
+        forall_eq(
+            vec![param("m", "Mem"), param("n", "Nat")],
+            call("rev", vec![call("arr_from", vec![var("m"), z(), var("n")])]),
+            call("arr_rev", vec![var("m"), var("n")]),
+        ),
+        induct(
+            "n",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case(
+                    "S",
+                    // arr_from(m,0,S k) = append(arr_from(m,0,k), [read(m,k)]); rev distributes.
+                    steps(
+                        vec![
+                            rewrite(lemma("arr_from_snoc"), Dir::Lr, Side::Lhs),
+                            rewrite(lemma("rev_append"), Dir::Lr, Side::Lhs),
+                            simp(Side::Both),
+                            rewrite(hyp(0), Dir::Lr, Side::Lhs),
+                        ],
+                        refl(),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall m hi s count, [sub(hi, s) = pred(count)] ⊢ read_refl_arr(m, hi, s, count) = arr_rev(m, count)
+pub fn read_refl_arr_eq() -> Theorem {
+    theorem(
+        "read_refl_arr_eq",
+        forall_eq_cond(
+            vec![param("m", "Mem"), param("hi", "Nat"), param("s", "Nat"), param("count", "Nat")],
+            vec![eqn(call("sub", vec![var("hi"), var("s")]), call("pred", vec![var("count")]))],
+            call("read_refl_arr", vec![var("m"), var("hi"), var("s"), var("count")]),
+            call("arr_rev", vec![var("m"), var("count")]),
+        ),
+        induct(
+            "count",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case(
+                    "S",
+                    steps(
+                        vec![simp(Side::Both), rewrite(premise(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)],
+                        rewrite_with(
+                            hyp(0),
+                            Dir::Lr,
+                            Side::Lhs,
+                            // discharge IH premise sub(hi, S s) = pred c
+                            vec![steps(vec![rewrite(lemma("sub_succ_r"), Dir::Lr, Side::Lhs), rewrite(premise(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)], refl())],
+                            refl(),
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// A fast theory for the pure list/arith lemmas (no rev_loop spec needed).
+fn list_theory() -> Theory {
+    let m = module();
+    let mut proven: Vec<Theorem> = Vec::new();
+    let ab = || vec![param("a", "Nat"), param("b", "Nat")];
+    let xs3 = || vec![param("xs", "List"), param("ys", "List"), param("zs", "List")];
+    let searched: Vec<(&str, ForallEq)> = vec![
+        ("add_z_r", add_z_r().claim),
+        ("add_succ_r", forall_eq(ab(), call("add", vec![var("a"), s(var("b"))]), s(call("add", vec![var("a"), var("b")])))),
+        ("le_add_r", forall_eq(ab(), call("le", vec![var("a"), call("add", vec![var("a"), var("b")])]), tru())),
+        ("le_refl", le_refl().claim),
+        ("append_nil", forall_eq(vec![param("xs", "List")], call("append", vec![var("xs"), nil()]), var("xs"))),
+        (
+            "append_assoc",
+            forall_eq(
+                xs3(),
+                call("append", vec![call("append", vec![var("xs"), var("ys")]), var("zs")]),
+                call("append", vec![var("xs"), call("append", vec![var("ys"), var("zs")])]),
+            ),
+        ),
+    ];
+    for (name, claim) in searched {
+        let th = check_theory(&m, &proven).unwrap();
+        let proof = find_proof(&m, &th, &claim, Limits::default()).unwrap_or_else(|| panic!("search failed {name}"));
+        proven.push(Theorem { name: name.into(), claim, proof });
+    }
+    for thm in [sub_succ_r(), arr_from_cons(), arr_from_snoc(), rev_append(), rev_arr_from(), read_refl_arr_eq()] {
+        proven.push(thm);
+    }
+    check_theory(&m, &proven).unwrap()
+}
+
+#[test]
+fn proves_task4_list_lemmas() {
+    let _ = list_theory();
+}
+
+/// forall a b, add(S(a), b) = S(add(a, b))  (the defining unfold, as a rewrite)
+pub fn add_succ_l() -> Theorem {
+    theorem(
+        "add_succ_l",
+        forall_eq(vec![param("a", "Nat"), param("b", "Nat")], call("add", vec![s(var("a")), var("b")]), s(call("add", vec![var("a"), var("b")]))),
+        steps(vec![simp(Side::Lhs)], refl()),
+    )
+}
+
+/// forall a b, le(S(a), S(b)) = le(a, b)  (the defining peel, as a rewrite)
+pub fn le_succ_both() -> Theorem {
+    theorem(
+        "le_succ_both",
+        forall_eq(vec![param("a", "Nat"), param("b", "Nat")], call("le", vec![s(var("a")), s(var("b"))]), call("le", vec![var("a"), var("b")])),
+        steps(vec![simp(Side::Lhs)], refl()),
+    )
+}
+
+/// forall m hi p, [le(p, hi) = True] ⊢ read(rev_loop(m, 0, hi), p) = read(m, sub(hi, p))
+/// Specializes the per-position spec to a *full* reversal of [0, hi]: every
+/// in-range position p reads the mirror sub(hi, p). Uses rev_loop_spec.
+pub fn read_rev_full() -> Theorem {
+    theorem(
+        "read_rev_full",
+        forall_eq_cond(
+            vec![param("m", "Mem"), param("hi", "Nat"), param("p", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("hi")]), tru())],
+            call("read", vec![call("rev_loop", vec![var("m"), z(), var("hi")]), var("p")]),
+            call("read", vec![var("m"), call("sub", vec![var("hi"), var("p")])]),
+        ),
+        steps(
+            vec![
+                rewrite(lemma("rev_loop_spec"), Dir::Lr, Side::Lhs), // -> expected(m,0,hi,p)
+                simp(Side::Lhs),                                     // -> ite(le(p,hi), read(m,sub(hi,p)), read(m,p))
+                rewrite(premise(0), Dir::Lr, Side::Lhs),             // le(p,hi) -> True
+                simp(Side::Lhs),
+            ],
+            refl(),
+        ),
+    )
+}
+
+/// forall m hi s count, [le(add(s, count), S(hi)) = True] ⊢
+///   arr_from(rev_loop(m, 0, hi), s, count) = read_refl_arr(m, hi, s, count)
+/// Pushes read_rev_full through arr_from: extracting positions s..s+count-1 of the
+/// reversed buffer reads the mirror addresses. Precondition = last position ≤ hi.
+pub fn arr_from_rev_eq_refl() -> Theorem {
+    // le(s, hi): s ≤ s+$0 ≤ hi.
+    let le_s_hi = || {
+        rewrite_with_inst(
+            lemma("le_trans"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![("b", call("add", vec![var("s"), var("$0")]))],
+            vec![
+                steps(vec![rewrite(lemma("le_add_r"), Dir::Lr, Side::Lhs)], refl()),
+                steps(vec![rewrite(lemma("le_succ_both"), Dir::Rl, Side::Lhs), rewrite(lemma("add_succ_r"), Dir::Rl, Side::Lhs), rewrite(premise(0), Dir::Lr, Side::Lhs)], refl()),
+            ],
+            refl(),
+        )
+    };
+    // le(add(S s, $0), S hi) = the IH precondition (= premise modulo add_succ_{l,r}).
+    // Use targeted rewrites, NOT simp (which would peel the outer le(S,S) too).
+    let ih_precond = || {
+        steps(
+            vec![
+                rewrite(lemma("add_succ_l"), Dir::Lr, Side::Lhs), // add(S s, $0) -> S(add s $0)
+                rewrite(lemma("add_succ_r"), Dir::Rl, Side::Lhs), // S(add s $0) -> add(s, S $0)
+                rewrite(premise(0), Dir::Lr, Side::Lhs),
+            ],
+            refl(),
+        )
+    };
+    theorem(
+        "arr_from_rev_eq_refl",
+        forall_eq_cond(
+            vec![param("m", "Mem"), param("hi", "Nat"), param("s", "Nat"), param("count", "Nat")],
+            vec![eqn(call("le", vec![call("add", vec![var("s"), var("count")]), s(var("hi"))]), tru())],
+            call("arr_from", vec![call("rev_loop", vec![var("m"), z(), var("hi")]), var("s"), var("count")]),
+            call("read_refl_arr", vec![var("m"), var("hi"), var("s"), var("count")]),
+        ),
+        induct(
+            "count",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case(
+                    "S",
+                    steps(
+                        vec![rewrite(lemma("arr_from_cons"), Dir::Lr, Side::Lhs)],
+                        rewrite_with(
+                            lemma("read_rev_full"),
+                            Dir::Lr,
+                            Side::Lhs,
+                            vec![le_s_hi()],
+                            steps(vec![simp(Side::Rhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![ih_precond()], refl())),
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall m n, arr_from(rev_loop(m, 0, pred n), 0, n) = rev(arr_from(m, 0, n))
+/// THE capstone: in-place array reverse equals functional rev, for arbitrary
+/// memory and arbitrary length n. LHS → read_refl_arr → arr_rev ← rev(arr_from).
+pub fn reverse_eq_rev() -> Theorem {
+    theorem(
+        "reverse_eq_rev",
+        forall_eq(
+            vec![param("m", "Mem"), param("n", "Nat")],
+            call("arr_from", vec![call("rev_loop", vec![var("m"), z(), call("pred", vec![var("n")])]), z(), var("n")]),
+            call("rev", vec![call("arr_from", vec![var("m"), z(), var("n")])]),
+        ),
+        rewrite_with(
+            lemma("arr_from_rev_eq_refl"),
+            Dir::Lr,
+            Side::Lhs,
+            // le(add(0, n), S(pred n)) = True
+            vec![case_on(
+                var("n"),
+                "Nat",
+                vec![
+                    case("Z", steps(vec![rewrite_all(hyp(0), Dir::Lr, Side::Lhs), simp(Side::Lhs)], refl())),
+                    case("S", steps(vec![rewrite_all(hyp(0), Dir::Lr, Side::Lhs), simp(Side::Lhs), rewrite(lemma("le_refl"), Dir::Lr, Side::Lhs)], refl())),
+                ],
+            )],
+            rewrite_with(
+                lemma("read_refl_arr_eq"),
+                Dir::Lr,
+                Side::Lhs,
+                // sub(pred n, 0) = pred n
+                vec![steps(vec![simp(Side::Lhs)], refl())],
+                // now LHS = arr_rev(m, n); fold the RHS rev(arr_from(...)) to match.
+                steps(vec![rewrite(lemma("rev_arr_from"), Dir::Lr, Side::Rhs)], refl()),
+            ),
+        ),
+    )
+}
+
+/// The complete theory for the capstone: toolkit + rev_loop_spec + the list lemmas.
+fn full_theory() -> Theory {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Theory> = OnceLock::new();
+    CACHE.get_or_init(build_full_theory).clone()
+}
+
+fn build_full_theory() -> Theory {
+    let m = module();
+    let mut proven = reverse_toolkit_theorems();
+    let ab = || vec![param("a", "Nat"), param("b", "Nat")];
+    let xs3 = || vec![param("xs", "List"), param("ys", "List"), param("zs", "List")];
+    let searched: Vec<(&str, ForallEq)> = vec![
+        ("le_add_r", forall_eq(ab(), call("le", vec![var("a"), call("add", vec![var("a"), var("b")])]), tru())),
+        ("append_nil", forall_eq(vec![param("xs", "List")], call("append", vec![var("xs"), nil()]), var("xs"))),
+        (
+            "append_assoc",
+            forall_eq(
+                xs3(),
+                call("append", vec![call("append", vec![var("xs"), var("ys")]), var("zs")]),
+                call("append", vec![var("xs"), call("append", vec![var("ys"), var("zs")])]),
+            ),
+        ),
+    ];
+    for (name, claim) in searched {
+        let th = check_theory(&m, &proven).unwrap();
+        let proof = find_proof(&m, &th, &claim, Limits::default()).unwrap_or_else(|| panic!("search failed {name}"));
+        proven.push(Theorem { name: name.into(), claim, proof });
+    }
+    proven.push(le_succ_both());
+    proven.push(add_succ_l());
+    // rev_loop_spec, proven against the toolkit-so-far (its Z case is searched).
+    let so_far = check_theory(&m, &proven).unwrap();
+    proven.push(Theorem { name: "rev_loop_spec".into(), claim: spec_claim(), proof: spec_proof(&m, &so_far) });
+    for thm in [sub_succ_r(), arr_from_cons(), arr_from_snoc(), rev_append(), rev_arr_from(), read_refl_arr_eq(), read_rev_full(), arr_from_rev_eq_refl()] {
+        proven.push(thm);
+    }
+    check_theory(&m, &proven).unwrap()
+}
+
+#[test]
+#[ignore = "the capstone: in-place reverse = rev for universal n (slow: builds the full theory)"]
+fn proves_reverse_eq_rev_universal() {
+    let m = module();
+    let theory = full_theory();
+    assert_eq!(check_theorem(&m, &theory, &reverse_eq_rev()), Ok(()), "reverse_eq_rev");
+}
+
 #[test]
 fn module_is_admitted() {
     assert_eq!(check_module(&module()), Ok(()));
@@ -2760,3 +3230,4 @@ fn proves_memory_framing_lemmas() {
 fn case_on_over_expression() {
     assert_eq!(check_theorem(&module(), &Theory::default(), &and_idem()), Ok(()));
 }
+
