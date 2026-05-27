@@ -19,7 +19,8 @@
 //!   field that distinguishes loop (jump back) from block (jump forward/out).
 
 use super::*;
-use proving_bootstrap::obj_lang::reduce::eval;
+// `simp` aliased: `super::*` already brings the proof-step builder `simp(side)`.
+use proving_bootstrap::obj_lang::reduce::{eval, simp as reduce_simp};
 
 // --- Rust-side builders for the wasm instruction/code data ------------------
 
@@ -406,6 +407,156 @@ pub fn wasm_module() -> Module {
 /// Memory holding `(addr, val)` cells, innermost-last.
 fn mcells(pairs: &[(u64, u64)]) -> Expr {
     pairs.iter().rev().fold(ctor("MNil", vec![]), |rest, &(a, v)| ctor("MCell", vec![nat(a), nat(v), rest]))
+}
+
+// ---------------------------------------------------------------------------
+// QoL: an untrusted stepper + Config pretty-printer for authoring VM proofs.
+//
+// `step`/`run` produce deeply-nested `Cfg(...)` terms that are unreadable in the
+// raw `Expr` Display. This renders one compactly — stack, locals, memory, and a
+// control-stack summary — and steps the machine one micro-step at a time via
+// `simp` (so it works on symbolic states too, the way the proof will see them).
+// Used from the `#[ignore]`d trace tests below, run with `--nocapture`.
+// ---------------------------------------------------------------------------
+
+/// `S^k(Z)` → `k`; anything else renders via its `Expr` Display (symbolic leaf).
+fn show_nat(e: &Expr) -> String {
+    let mut k = 0u64;
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Ctor { name, args } if name == "Z" && args.is_empty() => return k.to_string(),
+            Expr::Ctor { name, args } if name == "S" && args.len() == 1 => {
+                k += 1;
+                cur = &args[0];
+            }
+            other => return format!("{other}"),
+        }
+    }
+}
+
+/// Walk a cons-list (`cons`/`nil` ctor names), returning the elements and any
+/// non-nil tail (a symbolic variable, in the universal-`n` setting).
+fn seq_items<'a>(mut e: &'a Expr, cons: &str, nil: &str) -> (Vec<&'a Expr>, Option<&'a Expr>) {
+    let mut items = Vec::new();
+    loop {
+        match e {
+            Expr::Ctor { name, args } if name == cons && args.len() == 2 => {
+                items.push(&args[0]);
+                e = &args[1];
+            }
+            Expr::Ctor { name, args } if name == nil && args.is_empty() => return (items, None),
+            other => return (items, Some(other)),
+        }
+    }
+}
+
+/// Render the memory as `{a=v, ...}`, peeling both `MCell` ctors and `write`
+/// calls (whichever `simp` left), down to `MNil` or a symbolic base.
+fn show_mem(e: &Expr) -> String {
+    let mut pairs = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Ctor { name, args } if name == "MCell" && args.len() == 3 => {
+                pairs.push(format!("{}={}", show_nat(&args[0]), show_nat(&args[1])));
+                cur = &args[2];
+            }
+            Expr::Call { name, args } if name == "write" && args.len() == 3 => {
+                pairs.push(format!("{}={}", show_nat(&args[1]), show_nat(&args[2])));
+                cur = &args[0];
+            }
+            Expr::Ctor { name, args } if name == "MNil" && args.is_empty() => return format!("{{{}}}", pairs.join(", ")),
+            other => return format!("{{{} | {other}}}", pairs.join(", ")),
+        }
+    }
+}
+
+/// Control-stack summary: each frame as `loop(+N:HEAD)` / `block(+N:HEAD)`, where
+/// N is the instructions remaining in the frame and HEAD is the next one.
+fn show_ctrl(e: &Expr) -> String {
+    let (frames, _) = seq_items(e, "KCons", "KNil");
+    let rendered: Vec<String> = frames
+        .iter()
+        .map(|fr| match fr {
+            Expr::Ctor { name, args } if name == "Frm" && args.len() == 3 => {
+                let kind = match &args[0] {
+                    Expr::Ctor { name, .. } if name == "True" => "loop",
+                    _ => "block",
+                };
+                let (instrs, _) = seq_items(&args[1], "CCons", "CNil");
+                let head = instrs.first().and_then(|i| if let Expr::Ctor { name, .. } = i { Some(name.as_str()) } else { None }).unwrap_or("-");
+                format!("{kind}(+{}:{head})", instrs.len())
+            }
+            other => format!("{other}"),
+        })
+        .collect();
+    format!("[{}]", rendered.join(", "))
+}
+
+/// One-line view of a `Cfg(stack, locals, mem, ctrl)` term.
+fn show_cfg(cfg: &Expr) -> String {
+    if let Expr::Ctor { name, args } = cfg
+        && name == "Cfg"
+        && args.len() == 4
+    {
+        let (stack, _) = seq_items(&args[0], "Cons", "Nil");
+        let stack: Vec<String> = stack.iter().map(|e| show_nat(e)).collect();
+        let (locals, _) = seq_items(&args[1], "Cons", "Nil");
+        let labels = ["i", "j", "tmp"];
+        let locals: Vec<String> = locals
+            .iter()
+            .enumerate()
+            .map(|(k, e)| format!("{}={}", labels.get(k).copied().unwrap_or("?"), show_nat(e)))
+            .collect();
+        format!("stack=[{}] locals=[{}] mem={} ctrl={}", stack.join(","), locals.join(" "), show_mem(&args[2]), show_ctrl(&args[3]))
+    } else {
+        format!("{cfg}")
+    }
+}
+
+/// One machine step, by `simp`-reducing `step(cfg)`. Works on symbolic states.
+fn vm_step(m: &Module, cfg: &Expr) -> Expr {
+    reduce_simp(m, &call("step", vec![cfg.clone()]))
+}
+
+/// Print `n` steps of the VM from `cfg0`, one config per line. Returns the final
+/// config so a caller can assert on it.
+fn vm_trace(m: &Module, cfg0: Expr, n: usize) -> Expr {
+    let mut cur = cfg0;
+    println!("  0: {}", show_cfg(&cur));
+    for i in 1..=n {
+        cur = vm_step(m, &cur);
+        println!("{i:>3}: {}", show_cfg(&cur));
+        // stop early once halted (empty control stack)
+        if let Expr::Ctor { name, args } = &cur
+            && name == "Cfg"
+            && matches!(&args[3], Expr::Ctor { name, .. } if name == "KNil")
+        {
+            println!("     (halted after {i} steps)");
+            break;
+        }
+    }
+    cur
+}
+
+#[test]
+#[ignore = "authoring aid: prints the VM trace of the n=4 reverse (run with --nocapture)"]
+fn trace_wasm_reverse_n4() {
+    let m = wasm_module();
+    let mem0 = mcells(&[(0, 1), (1, 2), (2, 3), (3, 4)]);
+    let cfg0 = reduce_simp(&m, &call("init_cfg", vec![mem0, nat(4)]));
+    vm_trace(&m, cfg0, 80);
+}
+
+#[test]
+#[ignore = "authoring aid: VM trace with symbolic memory (what the proof sees)"]
+fn trace_wasm_reverse_symbolic() {
+    // Concrete length so control flow unfolds, but symbolic memory `m` — exactly
+    // the shape the correctness proof reasons about. Shows the read/write tower.
+    let m = wasm_module();
+    let cfg0 = reduce_simp(&m, &call("init_cfg", vec![var("m"), nat(4)]));
+    vm_trace(&m, cfg0, 80);
 }
 
 #[test]
