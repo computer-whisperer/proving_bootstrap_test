@@ -1346,17 +1346,16 @@ fn search_builds_arith_and_mirror_theory() {
     let _ = searched_arith_theory(&module());
 }
 
+/// Documents the search's capability boundary by asserting what it *cannot* do.
+/// `lt_imp_neq`'s proof must apply its own conditional induction hypothesis
+/// (`[lt(ka,kb)=True] ⊢ nat_eq(ka,kb)=False`) via `RewriteWith`. The search only
+/// ever emits plain `Rewrite`, so it can never discharge the premise — at *any*
+/// budget. This is why these were hand-proved, and it pinpoints the next search
+/// feature: generate `RewriteWith` with recursive premise search.
 #[test]
-#[ignore = "documents a search LIMIT: needs conditional-IH application (RewriteWith), which search does not generate"]
-fn search_finds_conditional_arithmetic() {
-    // lt_imp_neq's proof must apply its own conditional induction hypothesis
-    // ([lt(ka,kb)=True] => nat_eq(ka,kb)=False) via RewriteWith. The search only
-    // emits plain Rewrite, so it cannot discharge the premise and fails here.
-    // This pinpoints the next search feature: generate RewriteWith with
-    // recursive premise search.
+#[ignore = "slow (~2min): exhausts the search budget to confirm it cannot generate RewriteWith"]
+fn search_cannot_reach_conditional_arithmetic() {
     let m = module();
-    // Minimal theory: these conditional facts need no prior lemmas (induct +
-    // case + IH + ex-falso), and a big theory only adds noise rewrite candidates.
     let theory = Theory::default();
     let nat2 = || vec![param("a", "Nat"), param("b", "Nat")];
     let conds = [
@@ -1365,10 +1364,10 @@ fn search_finds_conditional_arithmetic() {
         // a < b  ⟹  b ≠ a
         ("lt_imp_neq_sym", forall_eq_cond(nat2(), vec![eqn(call("lt", vec![var("a"), var("b")]), tru())], call("nat_eq", vec![var("b"), var("a")]), fls())),
     ];
+    // A modest budget keeps this fast; the impossibility is structural (no
+    // RewriteWith move exists), not a matter of search effort.
     for (name, claim) in conds {
-        let found = find_proof(&m, &theory, &claim, Limits { depth: 8, nodes: 2_000_000 });
-        assert!(found.is_some(), "search failed for {name}");
-        let thm = Theorem { name: name.into(), claim: claim.clone(), proof: found.unwrap() };
-        assert_eq!(check_theorem(&m, &theory, &thm), Ok(()), "invalid for {name}");
+        let found = find_proof(&m, &theory, &claim, Limits { depth: 8, nodes: 200_000 });
+        assert!(found.is_none(), "search unexpectedly proved {name} — it now generates conditional-IH steps; update the ROADMAP capability note");
     }
 }
