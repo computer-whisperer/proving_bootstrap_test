@@ -66,7 +66,7 @@ pub struct Param {
 ///
 /// JSON is internally tagged on `expr` for readability, e.g.
 /// `{"expr":"Var","name":"xs"}`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "expr")]
 pub enum Expr {
     /// A variable: a function parameter or a `match`-bound field.
@@ -81,7 +81,7 @@ pub enum Expr {
 
 /// One arm of a `match`: on constructor `ctor`, bind its fields to `binds`
 /// (positionally) and evaluate `body`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Arm {
     pub ctor: String,
     pub binds: Vec<String>,

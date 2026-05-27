@@ -192,41 +192,62 @@ pub fn reduce_iota(e: &Expr) -> Expr {
 /// recursion) the firing chain is bounded by the constructor depth of the
 /// arguments, so `simp` always terminates.
 pub fn simp(module: &Module, e: &Expr) -> Expr {
-    match e {
+    // `simp` is a pure function of `e` (the module is fixed for the call), so we
+    // memoize on the structural identity of subterms. This is *only* a speed-up;
+    // the result is identical to the unmemoized reduction. It matters because the
+    // unfold path below re-`simp`s its already-normalized arguments (they are
+    // re-traversed when the substituted body is reduced), which makes a stuck,
+    // re-wrapped call like `step(step(…))` cost 2ⁿ without sharing — the blowup a
+    // fuelled VM interpreter hits while a guard stays symbolic. The cache is
+    // per-call (a different `module` ⇒ a different call ⇒ a fresh cache).
+    let mut memo: HashMap<Expr, Expr> = HashMap::new();
+    simp_memo(module, e, &mut memo)
+}
+
+fn simp_memo(module: &Module, e: &Expr, memo: &mut HashMap<Expr, Expr>) -> Expr {
+    if let Some(cached) = memo.get(e) {
+        return cached.clone();
+    }
+    let result = match e {
         Expr::Var { .. } => e.clone(),
         Expr::Ctor { name, args } => Expr::Ctor {
             name: name.clone(),
-            args: args.iter().map(|a| simp(module, a)).collect(),
+            args: args.iter().map(|a| simp_memo(module, a, memo)).collect(),
         },
         Expr::Match { scrutinee, arms } => {
-            let scrut = simp(module, scrutinee);
+            let scrut = simp_memo(module, scrutinee, memo);
             if let Expr::Ctor { name: cname, args } = &scrut
                 && let Some(arm) = arms.iter().find(|a| &a.ctor == cname)
                 && arm.binds.len() == args.len()
             {
                 let map: HashMap<String, Expr> = arm.binds.iter().cloned().zip(args.iter().cloned()).collect();
-                return simp(module, &subst(&arm.body, &map));
+                simp_memo(module, &subst(&arm.body, &map), memo)
+            } else {
+                // Stuck scrutinee: keep the residual match with its arms untouched.
+                // Reducing under the arm binders would δ-unfold recursive calls in
+                // the arm bodies forever (each rev/go unfolds to another such match).
+                Expr::Match { scrutinee: Box::new(scrut), arms: arms.clone() }
             }
-            // Stuck scrutinee: keep the residual match with its arms untouched.
-            // Reducing under the arm binders would δ-unfold recursive calls in
-            // the arm bodies forever (each rev/go unfolds to another such match).
-            Expr::Match { scrutinee: Box::new(scrut), arms: arms.clone() }
         }
         Expr::Call { name, args } => {
-            let args: Vec<Expr> = args.iter().map(|a| simp(module, a)).collect();
+            let args: Vec<Expr> = args.iter().map(|a| simp_memo(module, a, memo)).collect();
             if let Some(f) = module.fn_def(name)
                 && f.params.len() == args.len()
             {
                 let map: HashMap<String, Expr> =
                     f.params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
-                let reduced = simp(module, &subst(&f.body, &map));
+                let reduced = simp_memo(module, &subst(&f.body, &map), memo);
                 // A residual `match` means the unfold got stuck: keep the call.
                 if matches!(reduced, Expr::Match { .. }) {
-                    return Expr::Call { name: name.clone(), args };
+                    Expr::Call { name: name.clone(), args }
+                } else {
+                    reduced
                 }
-                return reduced;
+            } else {
+                Expr::Call { name: name.clone(), args }
             }
-            Expr::Call { name: name.clone(), args }
         }
-    }
+    };
+    memo.insert(e.clone(), result.clone());
+    result
 }
