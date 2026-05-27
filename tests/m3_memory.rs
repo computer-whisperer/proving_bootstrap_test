@@ -769,6 +769,57 @@ fn search_rediscovers_arithmetic_proofs() {
     }
 }
 
+/// All arithmetic + mirror lemmas the reverse needs, as (name, claim). Proofs
+/// are found by search — that's the automation layer doing the lemma volume.
+fn arith_claims() -> Vec<(String, ForallEq)> {
+    let mut v: Vec<(String, ForallEq)> = [
+        and_true_r(),
+        and_false_r(),
+        le_refl(),
+        lt_irrefl(),
+        le_succ_same(),
+        lt_z(),
+        le_lt_succ(),
+        add_z_r(),
+        nat_eq_refl(),
+    ]
+    .iter()
+    .map(|t| (t.name.clone(), t.claim.clone()))
+    .collect();
+
+    let nat3 = || vec![param("i", "Nat"), param("j", "Nat"), param("p", "Nat")];
+    let ab = || vec![param("a", "Nat"), param("b", "Nat")];
+    v.push(("add_succ_r".into(), forall_eq(ab(), call("add", vec![var("a"), s(var("b"))]), s(call("add", vec![var("a"), var("b")])))));
+    v.push(("sub_add_l".into(), forall_eq(ab(), call("sub", vec![call("add", vec![var("a"), var("b")]), var("a")]), var("b"))));
+    v.push(("sub_add_r".into(), forall_eq(ab(), call("sub", vec![call("add", vec![var("a"), var("b")]), var("b")]), var("a"))));
+    // mirror(i,j,i) = j ; mirror(i,j,j) = i ; mirror(i,S j,p) = mirror(S i,j,p)
+    v.push(("mirror_at_i".into(), forall_eq(vec![param("i", "Nat"), param("j", "Nat")], call("mirror", vec![var("i"), var("j"), var("i")]), var("j"))));
+    v.push(("mirror_at_j".into(), forall_eq(vec![param("i", "Nat"), param("j", "Nat")], call("mirror", vec![var("i"), var("j"), var("j")]), var("i"))));
+    v.push((
+        "mirror_step".into(),
+        forall_eq(nat3(), call("mirror", vec![var("i"), s(var("j")), var("p")]), call("mirror", vec![s(var("i")), var("j"), var("p")])),
+    ));
+    v
+}
+
+/// Build a theory by searching a proof for each claim in order.
+fn searched_arith_theory(m: &Module) -> Theory {
+    let mut proven: Vec<Theorem> = Vec::new();
+    for (name, claim) in arith_claims() {
+        let theory = check_theory(m, &proven).unwrap();
+        let proof = find_proof(m, &theory, &claim, Limits::default())
+            .unwrap_or_else(|| panic!("search failed to find a proof for {name}"));
+        proven.push(Theorem { name, claim, proof });
+    }
+    check_theory(m, &proven).unwrap()
+}
+
+#[test]
+fn search_builds_arith_and_mirror_theory() {
+    // All 15 arithmetic + mirror lemmas, proved entirely by search.
+    let _ = searched_arith_theory(&module());
+}
+
 /// The per-position loop invariant (the centerpiece). Claim only; proof TBD
 /// (hand or search): read(rev_loop(m,i,j), p) = expected(m,i,j,p).
 fn spec_claim() -> ForallEq {
@@ -794,28 +845,17 @@ fn search_finds_swap_framing() {
 }
 
 #[test]
-#[ignore = "exploratory: hybrid — induct on j by hand, search each case"]
+#[ignore = "exploratory: hybrid — induct on j by hand, search each case (rich theory)"]
 fn search_attempts_spec() {
     use proving_bootstrap::proof::check::{do_induct, Sequent};
     use proving_bootstrap::proof::search::find_from_sequent;
 
     let m = module();
-    let arith = [
-        and_true_r(),
-        and_false_r(),
-        le_refl(),
-        lt_irrefl(),
-        le_succ_same(),
-        lt_z(),
-        le_lt_succ(),
-        add_z_r(),
-        nat_eq_refl(),
-    ];
-    let theory = check_theory(&m, &arith).unwrap();
+    let theory = searched_arith_theory(&m);
     let claim = spec_claim();
     let seq0 = Sequent { vars: claim.vars, hyps: vec![], premises: vec![], lhs: claim.lhs, rhs: claim.rhs };
     let subs = do_induct(&m, &seq0, "j").unwrap();
-    let limits = Limits { depth: 12, nodes: 3_000_000 };
+    let limits = Limits { depth: 16, nodes: 2_000_000 };
     for (ctor, sub) in &subs {
         let found = find_from_sequent(&m, &theory, sub, limits);
         eprintln!("induct(j) case {ctor}: {}", if found.is_some() { "FOUND" } else { "not found" });
