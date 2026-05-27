@@ -697,11 +697,47 @@ pub fn le_lt_succ() -> Theorem {
     )
 }
 
+/// forall a, add(a, Z) = a
+pub fn add_z_r() -> Theorem {
+    theorem(
+        "add_z_r",
+        forall_eq(vec![param("a", "Nat")], call("add", vec![var("a"), z()]), var("a")),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case("S", steps(vec![simp(Side::Lhs), rewrite(hyp(0), Dir::Lr, Side::Lhs)], refl())),
+            ],
+        ),
+    )
+}
+
+/// forall a, [le(a, Z) = True] ⊢ a = Z
+/// `induct` (not `case_on`) substitutes the premise, so the S case's premise
+/// becomes `le(S(k), Z) = True` — contradictory, closed by ex-falso.
+pub fn le_z_eq() -> Theorem {
+    theorem(
+        "le_z_eq",
+        forall_eq_cond(vec![param("a", "Nat")], vec![eqn(call("le", vec![var("a"), z()]), tru())], var("a"), z()),
+        induct("a", vec![case("Z", refl()), case("S", absurd(premise(0)))]),
+    )
+}
+
 #[test]
 fn proves_basic_arithmetic() {
     let m = module();
     // dependency order so later lemmas can cite earlier ones
-    let lemmas = [and_true_r(), and_false_r(), le_refl(), lt_irrefl(), le_succ_same(), lt_z(), le_lt_succ()];
+    let lemmas = [
+        and_true_r(),
+        and_false_r(),
+        le_refl(),
+        lt_irrefl(),
+        le_succ_same(),
+        lt_z(),
+        le_lt_succ(),
+        add_z_r(),
+        le_z_eq(),
+    ];
     assert!(check_theory(&m, &lemmas).is_ok());
 }
 
