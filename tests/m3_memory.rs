@@ -820,6 +820,33 @@ fn search_builds_arith_and_mirror_theory() {
     let _ = searched_arith_theory(&module());
 }
 
+#[test]
+#[ignore = "documents a search LIMIT: needs conditional-IH application (RewriteWith), which search does not generate"]
+fn search_finds_conditional_arithmetic() {
+    // lt_imp_neq's proof must apply its own conditional induction hypothesis
+    // ([lt(ka,kb)=True] => nat_eq(ka,kb)=False) via RewriteWith. The search only
+    // emits plain Rewrite, so it cannot discharge the premise and fails here.
+    // This pinpoints the next search feature: generate RewriteWith with
+    // recursive premise search.
+    let m = module();
+    // Minimal theory: these conditional facts need no prior lemmas (induct +
+    // case + IH + ex-falso), and a big theory only adds noise rewrite candidates.
+    let theory = Theory::default();
+    let nat2 = || vec![param("a", "Nat"), param("b", "Nat")];
+    let conds = [
+        // a < b  ⟹  a ≠ b
+        ("lt_imp_neq", forall_eq_cond(nat2(), vec![eqn(call("lt", vec![var("a"), var("b")]), tru())], call("nat_eq", vec![var("a"), var("b")]), fls())),
+        // a < b  ⟹  b ≠ a
+        ("lt_imp_neq_sym", forall_eq_cond(nat2(), vec![eqn(call("lt", vec![var("a"), var("b")]), tru())], call("nat_eq", vec![var("b"), var("a")]), fls())),
+    ];
+    for (name, claim) in conds {
+        let found = find_proof(&m, &theory, &claim, Limits { depth: 8, nodes: 2_000_000 });
+        assert!(found.is_some(), "search failed for {name}");
+        let thm = Theorem { name: name.into(), claim: claim.clone(), proof: found.unwrap() };
+        assert_eq!(check_theorem(&m, &theory, &thm), Ok(()), "invalid for {name}");
+    }
+}
+
 /// The per-position loop invariant (the centerpiece). Claim only; proof TBD
 /// (hand or search): read(rev_loop(m,i,j), p) = expected(m,i,j,p).
 fn spec_claim() -> ForallEq {
