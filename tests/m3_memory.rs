@@ -152,20 +152,22 @@ pub fn module() -> Module {
                 ],
             ),
         ),
-        // rev_loop(m, i, j, fuel): while i < j, swap(i,j), i+1, j-1
+        // rev_loop(m, i, j): while i < j, swap(i, j), then (i+1, j-1).
+        // Recurses structurally on j (the right pointer is also the termination
+        // measure), so no separate fuel parameter is needed.
         fndef(
             "rev_loop",
-            vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat"), param("fuel", "Nat")],
+            vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat")],
             "Mem",
             match_(
-                var("fuel"),
+                var("j"),
                 vec![
                     arm("Z", &[], var("m")),
                     arm(
                         "S",
-                        &["f"],
+                        &["jp"],
                         match_(
-                            call("lt", vec![var("i"), var("j")]),
+                            call("lt", vec![var("i"), s(var("jp"))]),
                             vec![
                                 arm("False", &[], var("m")),
                                 arm(
@@ -174,10 +176,9 @@ pub fn module() -> Module {
                                     call(
                                         "rev_loop",
                                         vec![
-                                            call("swap", vec![var("m"), var("i"), var("j")]),
-                                            call("add", vec![var("i"), s(z())]),
-                                            call("pred", vec![var("j")]),
-                                            var("f"),
+                                            call("swap", vec![var("m"), var("i"), s(var("jp"))]),
+                                            s(var("i")),
+                                            var("jp"),
                                         ],
                                     ),
                                 ),
@@ -426,9 +427,85 @@ pub fn frame_use() -> Theorem {
     )
 }
 
+// --- swap framing: how `swap(m, i, j)` affects each read. These are the memory
+// lemmas the loop invariant rests on, and they exercise conditional framing.
+
+/// read(swap(m, i, j), j) = read(m, i)
+pub fn swap_at_j() -> Theorem {
+    theorem(
+        "swap_at_j",
+        forall_eq(
+            vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat")],
+            call("read", vec![call("swap", vec![var("m"), var("i"), var("j")]), var("j")]),
+            call("read", vec![var("m"), var("i")]),
+        ),
+        steps(
+            vec![simp(Side::Lhs), rewrite(lemma("nat_eq_refl"), Dir::Lr, Side::Lhs), simp(Side::Lhs)],
+            refl(),
+        ),
+    )
+}
+
+/// [nat_eq(j, i) = False] ⊢ read(swap(m, i, j), i) = read(m, j)
+pub fn swap_at_i() -> Theorem {
+    theorem(
+        "swap_at_i",
+        forall_eq_cond(
+            vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat")],
+            vec![eqn(call("nat_eq", vec![var("j"), var("i")]), fls())],
+            call("read", vec![call("swap", vec![var("m"), var("i"), var("j")]), var("i")]),
+            call("read", vec![var("m"), var("j")]),
+        ),
+        steps(
+            vec![
+                simp(Side::Lhs),
+                rewrite(premise(0), Dir::Lr, Side::Lhs),
+                simp(Side::Lhs),
+                rewrite(lemma("nat_eq_refl"), Dir::Lr, Side::Lhs),
+                simp(Side::Lhs),
+            ],
+            refl(),
+        ),
+    )
+}
+
+/// [nat_eq(j, p) = False, nat_eq(i, p) = False] ⊢ read(swap(m, i, j), p) = read(m, p)
+pub fn swap_elsewhere() -> Theorem {
+    theorem(
+        "swap_elsewhere",
+        forall_eq_cond(
+            vec![param("m", "Mem"), param("i", "Nat"), param("j", "Nat"), param("p", "Nat")],
+            vec![
+                eqn(call("nat_eq", vec![var("j"), var("p")]), fls()),
+                eqn(call("nat_eq", vec![var("i"), var("p")]), fls()),
+            ],
+            call("read", vec![call("swap", vec![var("m"), var("i"), var("j")]), var("p")]),
+            call("read", vec![var("m"), var("p")]),
+        ),
+        steps(
+            vec![
+                simp(Side::Lhs),
+                rewrite(premise(0), Dir::Lr, Side::Lhs),
+                simp(Side::Lhs),
+                rewrite(premise(1), Dir::Lr, Side::Lhs),
+                simp(Side::Lhs),
+            ],
+            refl(),
+        ),
+    )
+}
+
 #[test]
 fn module_is_admitted() {
     assert_eq!(check_module(&module()), Ok(()));
+}
+
+#[test]
+fn proves_swap_framing() {
+    let theory = check_theory(&module(), &[read_write(), nat_eq_refl()]).unwrap();
+    assert_eq!(check_theorem(&module(), &theory, &swap_at_j()), Ok(()), "swap_at_j");
+    assert_eq!(check_theorem(&module(), &theory, &swap_at_i()), Ok(()), "swap_at_i");
+    assert_eq!(check_theorem(&module(), &theory, &swap_elsewhere()), Ok(()), "swap_elsewhere");
 }
 
 #[test]
@@ -524,7 +601,7 @@ fn concrete_in_place_reverse_executes() {
         "concrete_reverse",
         forall_eq(
             vec![],
-            call("arr_from", vec![call("rev_loop", vec![mem0, z(), nat(2), nat(3)]), z(), nat(3)]),
+            call("arr_from", vec![call("rev_loop", vec![mem0, z(), nat(2)]), z(), nat(3)]),
             list(vec![nat(3), nat(2), nat(1)]),
         ),
         steps(vec![simp(Side::Both)], refl()),
