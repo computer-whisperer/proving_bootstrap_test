@@ -994,6 +994,326 @@ pub fn le_trans() -> Theorem {
     )
 }
 
+// --- conditional arithmetic building blocks for the reverse assembly. All
+// follow the keystone double-induction pattern (boundary cases by `absurd`/simp,
+// the recursive case discharges its IH via RewriteWith + `demote`). Unconditional
+// helpers (sub_le_l, lt_eq_le_succ, neq_add_succ, add_lt_cancel_r, add_succ_r) are
+// found by search and live in the theory these are checked against.
+
+/// forall a b, [le(S(a), b) = True] ⊢ le(a, b) = True
+pub fn le_succ_l() -> Theorem {
+    theorem(
+        "le_succ_l",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![s(var("a")), var("b")]), tru())],
+            call("le", vec![var("a"), var("b")]),
+            tru(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b, [le(a, b) = False] ⊢ nat_eq(b, a) = False
+pub fn nle_imp_neq_sym() -> Theorem {
+    theorem(
+        "nle_imp_neq_sym",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![var("a"), var("b")]), fls())],
+            call("nat_eq", vec![var("b"), var("a")]),
+            fls(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", absurd(premise(0))),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall a b, [lt(a, b) = True] ⊢ le(a, b) = True
+pub fn lt_imp_le() -> Theorem {
+    theorem(
+        "lt_imp_le",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("lt", vec![var("a"), var("b")]), tru())],
+            call("le", vec![var("a"), var("b")]),
+            tru(),
+        ),
+        induct(
+            "a",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall p n, [le(p, n) = True] ⊢ le(S(n), p) = False  (p ≤ n ⟹ ¬(n+1 ≤ p))
+pub fn lt_succ_nle() -> Theorem {
+    theorem(
+        "lt_succ_nle",
+        forall_eq_cond(
+            vec![param("p", "Nat"), param("n", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("n")]), tru())],
+            call("le", vec![s(var("n")), var("p")]),
+            fls(),
+        ),
+        induct(
+            "p",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())), // le(S n, Z) = False
+                case(
+                    "S",
+                    induct(
+                        "n",
+                        vec![
+                            case("Z", absurd(premise(0))), // le(S kp, Z) = True is false
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall i k, [lt(Z, k) = True] ⊢ lt(i, add(i, k)) = True  (k > 0 ⟹ i < i+k)
+pub fn lt_add_pos() -> Theorem {
+    theorem(
+        "lt_add_pos",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("k", "Nat")],
+            vec![eqn(call("lt", vec![z(), var("k")]), tru())],
+            call("lt", vec![var("i"), call("add", vec![var("i"), var("k")])]),
+            tru(),
+        ),
+        induct(
+            "i",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs), rewrite(premise(0), Dir::Lr, Side::Lhs)], refl())),
+                case(
+                    "S",
+                    steps(
+                        vec![simp(Side::Lhs)],
+                        rewrite_with(
+                            hyp(0),
+                            Dir::Lr,
+                            Side::Lhs,
+                            vec![steps(vec![rewrite(premise(0), Dir::Lr, Side::Lhs)], refl())],
+                            refl(),
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall p n, [le(p, n) = True] ⊢ sub(S(n), p) = S(sub(n, p))
+pub fn sub_succ_l() -> Theorem {
+    theorem(
+        "sub_succ_l",
+        forall_eq_cond(
+            vec![param("p", "Nat"), param("n", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("n")]), tru())],
+            call("sub", vec![s(var("n")), var("p")]),
+            s(call("sub", vec![var("n"), var("p")])),
+        ),
+        induct(
+            "p",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case(
+                    "S",
+                    induct(
+                        "n",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Both)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall p c, [le(p, c) = True] ⊢ add(p, sub(c, p)) = c
+pub fn add_sub_cancel() -> Theorem {
+    theorem(
+        "add_sub_cancel",
+        forall_eq_cond(
+            vec![param("p", "Nat"), param("c", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("c")]), tru())],
+            call("add", vec![var("p"), call("sub", vec![var("c"), var("p")])]),
+            var("c"),
+        ),
+        induct(
+            "p",
+            vec![
+                case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                case(
+                    "S",
+                    induct(
+                        "c",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// forall i c p, [le(p, c) = True] ⊢ sub(add(i, c), p) = add(i, sub(c, p))
+pub fn sub_add_assoc() -> Theorem {
+    theorem(
+        "sub_add_assoc",
+        forall_eq_cond(
+            vec![param("i", "Nat"), param("c", "Nat"), param("p", "Nat")],
+            vec![eqn(call("le", vec![var("p"), var("c")]), tru())],
+            call("sub", vec![call("add", vec![var("i"), var("c")]), var("p")]),
+            call("add", vec![var("i"), call("sub", vec![var("c"), var("p")])]),
+        ),
+        induct(
+            "p",
+            vec![
+                case("Z", steps(vec![simp(Side::Both)], refl())),
+                case(
+                    "S",
+                    induct(
+                        "c",
+                        vec![
+                            case("Z", absurd(premise(0))),
+                            case(
+                                "S",
+                                steps(
+                                    // add(i, S kc) is stuck under sub until we expose its S.
+                                    vec![rewrite(lemma("add_succ_r"), Dir::Lr, Side::Lhs), simp(Side::Both)],
+                                    rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl()),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// All conditional building blocks, checked against a searched theory that holds
+/// the unconditional helpers they cite (add_succ_r, etc.).
+fn building_block_theory() -> Theory {
+    searched_arith_theory(&module())
+}
+
+#[test]
+fn proves_arith_building_blocks() {
+    let m = module();
+    let th = building_block_theory();
+    for thm in [
+        le_succ_l(),
+        nle_imp_neq_sym(),
+        lt_imp_le(),
+        lt_succ_nle(),
+        lt_add_pos(),
+        sub_succ_l(),
+        add_sub_cancel(),
+        sub_add_assoc(),
+    ] {
+        assert_eq!(check_theorem(&m, &th, &thm), Ok(()), "{}", thm.name);
+    }
+}
+
+#[test]
+#[ignore = "probe: which unconditional sub/add arithmetic lemmas can the search find?"]
+fn probe_search_arith() {
+    let m = module();
+    let ab = || vec![param("a", "Nat"), param("b", "Nat")];
+    let abk = || vec![param("a", "Nat"), param("b", "Nat"), param("k", "Nat")];
+    let claims: Vec<(&str, ForallEq)> = vec![
+        ("sub_le_l", forall_eq(ab(), call("le", vec![call("sub", vec![var("a"), var("b")]), var("a")]), tru())),
+        ("lt_eq_le_succ", forall_eq(ab(), call("lt", vec![var("a"), var("b")]), call("le", vec![s(var("a")), var("b")]))),
+        (
+            "neq_add_succ",
+            forall_eq(ab(), call("nat_eq", vec![var("a"), call("add", vec![var("a"), s(var("b"))])]), fls()),
+        ),
+        (
+            "add_lt_cancel_r",
+            forall_eq(
+                abk(),
+                call("lt", vec![call("add", vec![var("a"), var("k")]), call("add", vec![var("b"), var("k")])]),
+                call("lt", vec![var("a"), var("b")]),
+            ),
+        ),
+    ];
+    // Build a theory of the already-proven arithmetic so search can cite it.
+    let theory = searched_arith_theory(&m);
+    for (name, claim) in claims {
+        let found = find_proof(&m, &theory, &claim, Limits { depth: 8, nodes: 1_000_000 });
+        eprintln!("{name}: {}", if found.is_some() { "FOUND" } else { "not found" });
+    }
+}
+
 #[test]
 fn proves_order_toolkit() {
     // The conditional order lemmas the reverse assembly leans on, hand-proved by
