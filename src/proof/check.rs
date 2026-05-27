@@ -119,7 +119,10 @@ pub fn check_theorem(module: &Module, theory: &Theory, thm: &Theorem) -> Result<
     check_sequent(module, theory, &seq, &thm.proof)
 }
 
-fn check_sequent(module: &Module, theory: &Theory, seq: &Sequent, proof: &Proof) -> Result<(), ProofError> {
+/// Check a proof against an arbitrary sequent (goal + hyps + premises). Public so
+/// proofs of sub-goals (e.g. one branch of an induction) can be authored and
+/// tested in isolation.
+pub fn check_sequent(module: &Module, theory: &Theory, seq: &Sequent, proof: &Proof) -> Result<(), ProofError> {
     match proof {
         Proof::Refl => {
             if seq.lhs == seq.rhs {

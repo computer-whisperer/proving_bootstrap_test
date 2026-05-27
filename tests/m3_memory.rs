@@ -1265,6 +1265,52 @@ fn use_prem(i: usize) -> Proof {
     steps(vec![rewrite(premise(i), Dir::Lr, Side::Lhs)], refl())
 }
 
+/// Discharge a premise subgoal `X = V` that is exactly the in-scope hypothesis `i`.
+fn use_hyp(i: usize) -> Proof {
+    steps(vec![rewrite(hyp(i), Dir::Lr, Side::Lhs)], refl())
+}
+
+/// forall a b, [le(S(a), b) = False] ⊢ le(b, a) = True  (¬(a < b) ⟹ b ≤ a)
+pub fn nle_succ_imp_le() -> Theorem {
+    theorem(
+        "nle_succ_imp_le",
+        forall_eq_cond(
+            vec![param("a", "Nat"), param("b", "Nat")],
+            vec![eqn(call("le", vec![s(var("a")), var("b")]), fls())],
+            call("le", vec![var("b"), var("a")]),
+            tru(),
+        ),
+        induct(
+            "a",
+            vec![
+                case(
+                    "Z",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())),
+                            case("S", absurd(premise(0))), // le(S Z, S kb)=F ⟹ le(Z,kb)=F, false
+                        ],
+                    ),
+                ),
+                case(
+                    "S",
+                    induct(
+                        "b",
+                        vec![
+                            case("Z", steps(vec![simp(Side::Lhs)], refl())), // le(Z, S ka)=True
+                            case(
+                                "S",
+                                steps(vec![simp(Side::Lhs)], rewrite_with(hyp(0), Dir::Lr, Side::Lhs, vec![demote(0)], refl())),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
 /// forall a b, [le(a, b) = True] ⊢ sub(a, b) = Z  (a ≤ b ⟹ a − b = 0)
 pub fn sub_z_of_le() -> Theorem {
     theorem(
@@ -1628,6 +1674,7 @@ fn build_reverse_toolkit_theory() -> Theory {
         sub_add_assoc(),
         sub_z_of_le(),
         nle_imp_le_succ(),
+        nle_succ_imp_le(),
         le_antisym(),
         mirror_lo(),
         mirror_form(),
@@ -1903,6 +1950,292 @@ fn search_finds_conditional_arithmetic() {
     }
 }
 
+/// The S-case loop variable `n` (the `induct(j)` field var $0).
+fn nn() -> Expr {
+    var("$0")
+}
+
+// --- The S-case True branch's 5 region leaves. Goal after the preamble:
+//   LHS = ite(and(le(S i,p), le(p,$0)), INNER, OUTER)
+//   RHS = ite(and(le(i,p), le(p,S$0)), read(m,M), read(m,p))   M = sub(S(add i $0), p)
+// Hyps: 0=IH, 1=lt(i,S$0)=True, 2=le(p,$0)=B, 3=le(S i,p)/le(p,S$0)=B', 4=le(i,p)=B''.
+
+/// i < p ≤ n: both sides read(m, M).
+fn region_interior() -> Proof {
+    steps(
+        vec![rewrite_all(hyp(3), Dir::Lr, Side::Lhs), rewrite_all(hyp(2), Dir::Lr, Side::Lhs)],
+        rewrite_with(
+            lemma("le_succ_l"),
+            Dir::Lr,
+            Side::Rhs,
+            vec![use_hyp(3)],
+            rewrite_with(
+                lemma("le_succ_r"),
+                Dir::Lr,
+                Side::Rhs,
+                vec![use_hyp(2)],
+                steps(
+                    vec![simp(Side::Both)],
+                    rewrite_with(
+                        lemma("mirror_neq_succ"),
+                        Dir::Lr,
+                        Side::Lhs,
+                        vec![use_hyp(3), use_hyp(2)],
+                        rewrite_with(
+                            lemma("mirror_neq_i"),
+                            Dir::Lr,
+                            Side::Lhs,
+                            vec![use_hyp(2)],
+                            steps(vec![simp(Side::Lhs)], refl()),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+}
+
+/// p = i: LHS picks read(m, S n) (nat_eq(i,p)=T); RHS picks read(m, M)=read(m, S n).
+fn region_p_eq_i() -> Proof {
+    steps(
+        vec![rewrite_all(hyp(3), Dir::Lr, Side::Lhs), rewrite_all(hyp(2), Dir::Lr, Side::Lhs), rewrite_all(hyp(4), Dir::Lr, Side::Rhs)],
+        rewrite_with(
+            lemma("le_succ_r"),
+            Dir::Lr,
+            Side::Rhs,
+            vec![use_hyp(2)],
+            rewrite_with(
+                lemma("mirror_lo"),
+                Dir::Lr,
+                Side::Rhs,
+                vec![use_hyp(4), use_hyp(3)],
+                steps(
+                    vec![simp(Side::Both)],
+                    rewrite_with(
+                        lemma("nle_imp_neq"),
+                        Dir::Lr,
+                        Side::Lhs,
+                        vec![rewrite_with(lemma("lt_succ_nle"), Dir::Lr, Side::Lhs, vec![use_hyp(2)], refl())],
+                        rewrite_with(
+                            lemma("le_antisym"),
+                            Dir::Lr,
+                            Side::Lhs,
+                            vec![use_hyp(4), rewrite_with(lemma("nle_succ_imp_le"), Dir::Lr, Side::Lhs, vec![use_hyp(3)], refl())],
+                            steps(vec![simp(Side::Lhs)], refl()),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+}
+
+/// p < i: both sides read(m, p).
+fn region_p_lt_i() -> Proof {
+    steps(
+        vec![rewrite_all(hyp(3), Dir::Lr, Side::Lhs), rewrite_all(hyp(4), Dir::Lr, Side::Rhs)],
+        steps(
+            vec![simp(Side::Both)],
+            rewrite_with(
+                lemma("nle_imp_neq"),
+                Dir::Lr,
+                Side::Lhs,
+                vec![rewrite_with(lemma("lt_succ_nle"), Dir::Lr, Side::Lhs, vec![use_hyp(2)], refl())],
+                rewrite_with(
+                    lemma("nle_imp_neq"),
+                    Dir::Lr,
+                    Side::Lhs,
+                    vec![use_hyp(4)],
+                    steps(vec![simp(Side::Lhs)], refl()),
+                ),
+            ),
+        ),
+    )
+}
+
+/// le(i, $0) = True, from hyp(1): lt(i, S $0) = True (via le_lt_succ).
+fn le_i_n_proof() -> Proof {
+    steps(vec![rewrite(lemma("le_lt_succ"), Dir::Rl, Side::Lhs), rewrite(hyp(1), Dir::Lr, Side::Lhs)], refl())
+}
+
+/// le(S i, p) = True in the p > S n region, via le_trans pivot S $0.
+fn le_s_i_p_proof() -> Proof {
+    rewrite_with_inst(
+        lemma("le_trans"),
+        Dir::Lr,
+        Side::Lhs,
+        vec![("b", s(nn()))],
+        vec![
+            steps(vec![simp(Side::Lhs), rewrite(lemma("le_lt_succ"), Dir::Rl, Side::Lhs), rewrite(hyp(1), Dir::Lr, Side::Lhs)], refl()),
+            rewrite_with(lemma("nle_imp_le_succ"), Dir::Lr, Side::Lhs, vec![use_hyp(2)], refl()),
+        ],
+        refl(),
+    )
+}
+
+/// p = S n: LHS picks read(m, i) (nat_eq(S n,p)=T); RHS picks read(m, M)=read(m, i).
+fn region_p_eq_succ_n() -> Proof {
+    steps(
+        vec![
+            rewrite_all(hyp(2), Dir::Lr, Side::Lhs),
+            rewrite(lemma("and_false_r"), Dir::Lr, Side::Lhs),
+            rewrite_all(hyp(3), Dir::Lr, Side::Rhs),
+        ],
+        rewrite_with_inst(
+            lemma("le_trans"),
+            Dir::Lr,
+            Side::Rhs,
+            vec![("b", nn())],
+            vec![
+                le_i_n_proof(),
+                rewrite_with(lemma("le_succ_l"), Dir::Lr, Side::Lhs, vec![rewrite_with(lemma("nle_imp_le_succ"), Dir::Lr, Side::Lhs, vec![use_hyp(2)], refl())], refl()),
+            ],
+            rewrite_with(
+                lemma("mirror_hi"),
+                Dir::Lr,
+                Side::Rhs,
+                vec![use_hyp(3), use_hyp(2)],
+                steps(
+                    vec![simp(Side::Both)],
+                    rewrite_with(lemma("eq_of_bounds"), Dir::Lr, Side::Lhs, vec![use_hyp(3), use_hyp(2)], steps(vec![simp(Side::Lhs)], refl())),
+                ),
+            ),
+        ),
+    )
+}
+
+/// p > S n: both sides read(m, p).
+fn region_p_gt_succ_n() -> Proof {
+    steps(
+        vec![
+            rewrite_all(hyp(2), Dir::Lr, Side::Lhs),
+            rewrite(lemma("and_false_r"), Dir::Lr, Side::Lhs),
+            rewrite_all(hyp(3), Dir::Lr, Side::Rhs),
+            rewrite(lemma("and_false_r"), Dir::Lr, Side::Rhs),
+            simp(Side::Both), // collapse dead ite(False, …) so nat_eq rewrites hit OUTER
+        ],
+        rewrite_with(
+            lemma("nle_imp_neq_sym"),
+            Dir::Lr,
+            Side::Lhs,
+            vec![use_hyp(3)],
+            rewrite_with(
+                lemma("lt_imp_neq"),
+                Dir::Lr,
+                Side::Lhs,
+                vec![steps(vec![rewrite(lemma("lt_eq_le_succ"), Dir::Lr, Side::Lhs)], le_s_i_p_proof())],
+                steps(vec![simp(Side::Lhs)], refl()),
+            ),
+        ),
+    )
+}
+
+/// Preamble for the S-case True branch: expose the loop body, resolve the guard,
+/// apply the IH, align the mirror address to the canonical sub(S(add i $0), p).
+fn spec_true_preamble() -> Vec<Step> {
+    vec![
+        unfold("rev_loop", Side::Lhs),
+        simp(Side::Lhs),
+        rewrite(hyp(1), Dir::Lr, Side::Lhs),
+        simp(Side::Lhs),
+        rewrite(hyp(0), Dir::Lr, Side::Lhs),
+        simp(Side::Both),
+        rewrite(lemma("add_succ_r"), Dir::Lr, Side::Rhs),
+    ]
+}
+
+/// The full S-case True branch: preamble + the 5-region case tree.
+fn spec_true_branch() -> Proof {
+    let le = |a: Expr, b: Expr| call("le", vec![a, b]);
+    steps(
+        spec_true_preamble(),
+        case_on(
+            le(var("p"), nn()),
+            "Bool",
+            vec![
+                case(
+                    "True",
+                    case_on(
+                        le(s(var("i")), var("p")),
+                        "Bool",
+                        vec![
+                            case("True", region_interior()),
+                            case(
+                                "False",
+                                case_on(le(var("i"), var("p")), "Bool", vec![case("True", region_p_eq_i()), case("False", region_p_lt_i())]),
+                            ),
+                        ],
+                    ),
+                ),
+                case(
+                    "False",
+                    case_on(le(var("p"), s(nn())), "Bool", vec![case("True", region_p_eq_succ_n()), case("False", region_p_gt_succ_n())]),
+                ),
+            ],
+        ),
+    )
+}
+
+#[test]
+#[ignore = "checks the spec S-case True branch in isolation against its sub-sequent"]
+fn proves_spec_true_branch() {
+    use proving_bootstrap::proof::check::{check_sequent, do_case_on, do_induct, Sequent};
+    let m = module();
+    let theory = reverse_toolkit_theory();
+    let claim = spec_claim();
+    let seq0 = Sequent { vars: claim.vars, hyps: vec![], premises: vec![], lhs: claim.lhs, rhs: claim.rhs };
+    let s_sub = do_induct(&m, &seq0, "j").unwrap().into_iter().find(|(c, _)| c == "S").unwrap().1;
+    let guard = call("lt", vec![var("i"), s(var("$0"))]);
+    let true_sub = do_case_on(&m, &s_sub, &guard, "Bool").unwrap().into_iter().find(|(c, _)| c == "True").unwrap().1;
+    assert_eq!(check_sequent(&m, &theory, &true_sub, &spec_true_branch()), Ok(()));
+}
+
+#[test]
+#[ignore = "debug: run the True-branch preamble, then check each region leaf separately"]
+fn debug_spec_regions() {
+    use proving_bootstrap::proof::check::{check_sequent, do_case_on, do_induct, run_steps, Sequent};
+    let m = module();
+    let theory = reverse_toolkit_theory();
+    let claim = spec_claim();
+    let seq0 = Sequent { vars: claim.vars, hyps: vec![], premises: vec![], lhs: claim.lhs, rhs: claim.rhs };
+    let s_sub = do_induct(&m, &seq0, "j").unwrap().into_iter().find(|(c, _)| c == "S").unwrap().1;
+    let guard = call("lt", vec![var("i"), s(var("$0"))]);
+    let true_sub = do_case_on(&m, &s_sub, &guard, "Bool").unwrap().into_iter().find(|(c, _)| c == "True").unwrap().1;
+    let after = run_steps(&m, &theory, &true_sub, &spec_true_preamble()).expect("preamble");
+    eprintln!("after preamble:\n{after}\n");
+    let le = |a: Expr, b: Expr| call("le", vec![a, b]);
+
+    // le(p,$0) split
+    let b1 = do_case_on(&m, &after, &le(var("p"), nn()), "Bool").unwrap();
+    let t1 = b1.iter().find(|(c, _)| c == "True").unwrap().1.clone();
+    let f1 = b1.iter().find(|(c, _)| c == "False").unwrap().1.clone();
+    // interior / p<=i
+    let b2 = do_case_on(&m, &t1, &le(s(var("i")), var("p")), "Bool").unwrap();
+    let interior_seq = b2.iter().find(|(c, _)| c == "True").unwrap().1.clone();
+    let pi = b2.iter().find(|(c, _)| c == "False").unwrap().1.clone();
+    let b3 = do_case_on(&m, &pi, &le(var("i"), var("p")), "Bool").unwrap();
+    let p_eq_i_seq = b3.iter().find(|(c, _)| c == "True").unwrap().1.clone();
+    let p_lt_i_seq = b3.iter().find(|(c, _)| c == "False").unwrap().1.clone();
+    // p>n side
+    let b4 = do_case_on(&m, &f1, &le(var("p"), s(nn())), "Bool").unwrap();
+    let p_eq_succ_seq = b4.iter().find(|(c, _)| c == "True").unwrap().1.clone();
+    let p_gt_succ_seq = b4.iter().find(|(c, _)| c == "False").unwrap().1.clone();
+
+    for (name, seq, proof) in [
+        ("interior", &interior_seq, region_interior()),
+        ("p_eq_i", &p_eq_i_seq, region_p_eq_i()),
+        ("p_lt_i", &p_lt_i_seq, region_p_lt_i()),
+        ("p_eq_succ_n", &p_eq_succ_seq, region_p_eq_succ_n()),
+        ("p_gt_succ_n", &p_gt_succ_seq, region_p_gt_succ_n()),
+    ] {
+        let r = check_sequent(&m, &theory, seq, &proof);
+        eprintln!("region {name}: {r:?}");
+        if r.is_err() {
+            eprintln!("  goal was:\n{seq}\n");
+        }
+    }
+}
+
 /// The per-position loop invariant (the centerpiece). Claim only; proof TBD
 /// (hand or search): read(rev_loop(m,i,j), p) = expected(m,i,j,p).
 fn spec_claim() -> ForallEq {
@@ -1924,6 +2257,24 @@ fn search_finds_swap_framing() {
         assert!(found.is_some(), "search failed for {}", thm.name);
         let searched = Theorem { name: thm.name.clone(), claim: thm.claim.clone(), proof: found.unwrap() };
         assert_eq!(check_theorem(&m, &theory, &searched), Ok(()), "invalid for {}", thm.name);
+    }
+}
+
+#[test]
+#[ignore = "probe: can search close the spec's Z case (induct j)?"]
+fn probe_search_z_case() {
+    use proving_bootstrap::proof::check::{do_induct, Sequent};
+    use proving_bootstrap::proof::search::find_from_sequent;
+    let m = module();
+    let theory = reverse_toolkit_theory();
+    let claim = spec_claim();
+    let seq0 = Sequent { vars: claim.vars, hyps: vec![], premises: vec![], lhs: claim.lhs, rhs: claim.rhs };
+    let subs = do_induct(&m, &seq0, "j").unwrap();
+    for (ctor, sub) in &subs {
+        if ctor == "Z" {
+            let found = find_from_sequent(&m, &theory, sub, Limits { depth: 10, nodes: 3_000_000 });
+            eprintln!("Z case: {}", if found.is_some() { "FOUND" } else { "not found" });
+        }
     }
 }
 
